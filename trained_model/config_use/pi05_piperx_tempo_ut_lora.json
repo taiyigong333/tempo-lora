@@ -5,7 +5,10 @@
     "root": "data/11-7-piperx_rotating_red_square",
     "repo_id": "piperx_rotating_red_square",
     "action_dim": 7,
-    "cameras": ["head", "left_wrist"],
+    "cameras": [
+      "head",
+      "left_wrist"
+    ],
     "fps": 30,
     "prompt": "grab the rotating red square",
     "use_delta_joint_actions": true,
@@ -40,7 +43,10 @@
     "lora_siglip_rank": 16,
     "lora_dropout": 0.0,
     "train_time_projections": false,
-    "compile_sample_actions": false
+    "compile_sample_actions": false,
+    "compact_prefix": true,
+    "checkpoint_joint_forward": false,
+    "joint_gradient_checkpointing": true
   },
   "paths": {
     "base_jax": "/data/gcj_data/fast/baseline/openpi/origin_checkpoint/openpi-assets/checkpoints/pi05_base",
@@ -77,9 +83,9 @@
     "num_workers": 4,
     "array_cache_size": 128,
     "data_loader_timeout": 120,
-    "lora_lr": 0.00005,
+    "lora_lr": 5e-05,
     "tempo_lr": 0.0001,
-    "ut_lr": 0.00005,
+    "ut_lr": 5e-05,
     "weight_decay": 0.01,
     "warmup_steps": 500,
     "min_lr_ratio": 0.1,

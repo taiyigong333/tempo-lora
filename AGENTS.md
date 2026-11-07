@@ -13,4 +13,4 @@
 - 反馈代理 action[t] 已对应下一实测状态。窗口起点不可再次移位，历史只取 i<t，在线历史由实测反馈重建。
 - 实施小而聚焦的修改，修改后运行基础回归及可行的完整模型验证。区分代码验证、短程诊断、正式训练和真机评测。
 - 每次重要变化同步维护交接，包括命令、配置、状态、W&B 地址和实际结果。
-- 当前正在进行执行提速切换，先读 docs/训练性能优化.md 和 trained_model/runtime/performance_20261108/transition.json；tmux tempo_perf_transition 等待step500完整状态后恢复同一run，避免重复启动或从头训练。执行开关仅控制无效prefix压缩与联合重计算，实际新配置在runtime/performance_20261108/config.json产生。
+- 执行提速已从完整step500安全生效，先读 docs/训练性能优化.md 和 trained_model/runtime/performance_20261108/transition.json。正式执行compact_prefix=true、checkpoint_joint_forward=false、joint_gradient_checkpointing=true，约3.18秒/步；同一run与W&B继续。实际配置trained_model/runtime/performance_20261108/config.json，切换程序已完成，勿重跑transition.py或从头训练。
