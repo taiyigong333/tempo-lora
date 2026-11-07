@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import time
 import os
+from datetime import datetime
 
 import numpy as np
 import torch
@@ -84,6 +85,9 @@ def validation_loss(model, loader, batches):
 def train_policy(cfg, *, resume=False, steps=None):
     if int(os.environ.get("WORLD_SIZE", "1")) != 1:
         raise ValueError("当前 Piper-X 入口使用单 GPU，请使用一个训练进程")
+    not_before = cfg["training"].get("not_before")
+    if not_before and time.time() < datetime.fromisoformat(not_before).timestamp():
+        raise RuntimeError(f"正式训练计划从 {not_before} 开始，请等待定时任务")
     check_caches(cfg)
     seed_all(cfg["seed"])
     tc = cfg["training"]

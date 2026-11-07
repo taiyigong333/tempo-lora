@@ -96,6 +96,13 @@ def test_resume_sampler_same_future_batches():
     assert full[13:] == resumed
 
 
+def test_formal_training_cannot_start_early(monkeypatch):
+    from openpi.tempo_lora.train import train_policy
+    monkeypatch.setattr("openpi.tempo_lora.train.time.time", lambda: 1000)
+    with pytest.raises(RuntimeError, match="正式训练计划"):
+        train_policy({"training": {"not_before": "2026-11-07T23:30:00+08:00"}})
+
+
 def test_legacy_configuration_and_complete_config_discovery():
     from openpi.training.config import get_config
     assert Pi0Config().predict_ut is False

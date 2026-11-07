@@ -4,6 +4,7 @@
 - 先读 `need/need.md`、`docs/实现设计.md`、`docs/交接.md` 及 `trained_model/runtime/status.json`。
 - 当前用户要求全部 393 episodes 用于训练，启用 W&B online。统一指令为 `grab the rotating red square`。
 - 用户已授权尝试完整训练流程，按 SAM2、norm、MVAE、u_t、decoder、完整验证、策略训练的依赖顺序推进。
+- 用户指定正式策略训练于 2026-11-07 北京时间 23:30 在 tmux 启动。当前计划与配置快照位于 trained_model/runtime/schedule_20261107_2330，正式训练入口带 not_before 时间保护。
 - uv 独立环境位于 `tempo/.venv`，优先通过 `trained_model/scripts/run.sh` 执行。保留 Transformers 4.53.2 与补丁。
 - Git 根目录为本目录，源码位于 tempo 子目录。原始数据、基础权重和历史 openpi 目录均属于输入资产。
 - `data/` 原件只读。缓存动作语义、维度、窗口或归一化变化时，新建版本目录。

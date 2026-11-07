@@ -14,4 +14,8 @@ if [[ -z "${WANDB_API_KEY:-}" && -f "$ROOT/../openpi/.wandb_env" ]]; then
     source "$ROOT/../openpi/.wandb_env"
 fi
 cd "$ROOT/tempo"
+if [[ "${1:-}" == "schedule" ]]; then
+    shift
+    exec uv run --no-sync python "$ROOT/trained_model/scripts/schedule_training.py" "$@"
+fi
 exec uv run --no-sync python scripts/piperx.py "$@"
