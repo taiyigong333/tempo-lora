@@ -51,6 +51,9 @@ def validate_config(cfg):
         raise ValueError("首版 EMA 未启用，请显式使用 false")
     if model["dtype"] not in ("float32", "bfloat16"):
         raise ValueError("仅支持 BF16 混合精度与全 FP32 诊断")
+    for key in ("compact_prefix", "checkpoint_joint_forward", "joint_gradient_checkpointing"):
+        if key in model and type(model[key]) is not bool:
+            raise ValueError(f"执行配置 {key} 必须是 bool")
     for key in cfg["paths"]:
         cfg["paths"][key] = str((ROOT / cfg["paths"][key]).resolve())
     cfg["data"]["root"] = str((ROOT / data["root"]).resolve())

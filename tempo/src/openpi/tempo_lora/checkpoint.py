@@ -1,5 +1,6 @@
 """原子保存完整训练状态，adapter 与额外模块共用严格加载协议。"""
 
+import copy
 import math
 from pathlib import Path
 import random
@@ -95,11 +96,22 @@ def save_policy(path, model, optimizer, schedule, step, cfg, references, **extra
                  "ema_enabled": False, **extra}, path)
 
 
+EXECUTION_MODEL_OPTIONS = ("compact_prefix", "checkpoint_joint_forward", "joint_gradient_checkpointing")
+
+
+def training_config_digest(cfg):
+    # 仅放行经验证的执行方式变化，其他模型、数据与优化器参数继续严格匹配。
+    normalized = copy.deepcopy(cfg)
+    for key in EXECUTION_MODEL_OPTIONS:
+        normalized.get("model", {}).pop(key, None)
+    return digest(normalized)
+
+
 def load_policy_checkpoint(path, cfg=None):
     saved = torch.load(path, map_location="cpu", weights_only=False)
     if saved.get("format_version") != 1 or saved.get("action_space") != ACTION_SPACE:
         raise ValueError("检查点格式或动作语义不兼容")
-    if cfg is not None and digest(cfg) != digest(saved["config"]):
+    if cfg is not None and training_config_digest(cfg) != training_config_digest(saved["config"]):
         raise ValueError("恢复配置与检查点不一致，请使用保存的配置并保持调度参数")
     # 基础模型与辅助产物是 checkpoint 的组成部分，变化时拒绝静默加载。
     for name, reference in saved["references"].items():

@@ -212,3 +212,49 @@ def test_online_feedback_matches_offline_and_resets():
     with pytest.raises(ValueError, match="连续"):
         online.infer({"episode_id": "b", "timestamp": 10.5, "state": states[1], "images": images})
     assert online.frame == 0 and online.sam.count == 1
+
+
+@pytest.mark.parametrize("change", ["batch_size", "lora_lr", "lora_vlm_rank", "prompt"])
+def test_resume_execution_options_keep_training_contract_strict(tmp_path, change):
+    import copy
+    from openpi.tempo_lora.checkpoint import load_policy_checkpoint
+    from openpi.tempo_lora.config import ACTION_SPACE
+    cfg = {"model": {"lora_vlm_rank": 16}, "training": {"batch_size": 16, "lora_lr": 5e-5},
+           "data": {"prompt": "grab the rotating red square"}}
+    path = tmp_path / "saved.pt"
+    torch.save({"format_version": 1, "action_space": ACTION_SPACE, "config": cfg, "references": {}}, path)
+    optimized = copy.deepcopy(cfg)
+    optimized["model"].update(compact_prefix=True, checkpoint_joint_forward=False, joint_gradient_checkpointing=True)
+    load_policy_checkpoint(path, optimized)
+    owner = "training" if change in ("batch_size", "lora_lr") else "data" if change == "prompt" else "model"
+    optimized[owner][change] = "changed"
+    with pytest.raises(ValueError, match="恢复配置"):
+        load_policy_checkpoint(path, optimized)
+
+
+def test_compact_prefix_preserves_visible_attention_positions_and_gradients():
+    from openpi.models_pytorch.pi0_pytorch import compact_prefix_tokens, make_att_2d_masks
+    torch.manual_seed(42)
+    prefix = torch.randn(2, 6, 8, requires_grad=True)
+    pads = torch.tensor([[True, False, True, False, False, False], [True, False, False, True, False, False]])
+    boundaries = torch.zeros_like(pads)
+    compact, compact_pads, compact_boundaries = compact_prefix_tokens(prefix, pads, boundaries)
+    keep = pads.any(0)
+    assert compact.shape[1] == 3
+    suffix = torch.randn(2, 1, 8)
+    def attend(embs, mask, ar):
+        x = torch.cat((embs, suffix), 1)
+        mask = torch.cat((mask, torch.ones(2, 1, dtype=torch.bool)), 1)
+        ar = torch.cat((ar, torch.ones(2, 1, dtype=torch.bool)), 1)
+        attention = make_att_2d_masks(mask, ar)
+        logits = (x @ x.transpose(1, 2)) / 8**.5
+        return (logits.masked_fill(~attention, -1e9).softmax(-1) @ x)[:, -1]
+    expected = attend(prefix, pads, boundaries)
+    actual = attend(compact, compact_pads, compact_boundaries)
+    torch.testing.assert_close(expected, actual)
+    torch.testing.assert_close(torch.cumsum(pads, 1)[:, keep], torch.cumsum(compact_pads, 1))
+    before = torch.autograd.grad(expected.sum(), prefix, retain_graph=True)[0]
+    after = torch.autograd.grad(actual.sum(), prefix)[0]
+    torch.testing.assert_close(before, after)
+    with pytest.raises(ValueError, match="boundary"):
+        compact_prefix_tokens(prefix, pads, torch.ones_like(pads))

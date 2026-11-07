@@ -17,10 +17,12 @@ class PaliGemmaWithExpertModel(nn.Module):
         use_adarms=None,
         precision: Literal["bfloat16", "float32"] = "bfloat16",
         tempo_mot_temporal_period: int = 4,
+        joint_gradient_checkpointing: bool = True,
     ):
         if use_adarms is None:
             use_adarms = [False, False]
         super().__init__()
+        self.joint_gradient_checkpointing = joint_gradient_checkpointing
 
         vlm_config_hf = CONFIG_MAPPING["paligemma"]()
         vlm_config_hf._vocab_size = 257152  # noqa: SLF001
@@ -143,6 +145,9 @@ class PaliGemmaWithExpertModel(nn.Module):
                     print("Forcing gradient checkpointing to be enabled for Gemma expert model")
                     self.gemma_expert.model.gradient_checkpointing = True
                 use_gradient_checkpointing = True
+
+            # 此开关仅控制联合路径；视觉分支的重计算由原有设置独立管理。
+            use_gradient_checkpointing = use_gradient_checkpointing and self.joint_gradient_checkpointing
 
             # Debug gradient checkpointing status
             if hasattr(self, "_debug_gc_printed") and not self._debug_gc_printed:

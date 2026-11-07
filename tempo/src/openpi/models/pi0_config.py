@@ -91,6 +91,10 @@ class Pi0Config(_model.BaseModelConfig):
     lora_dropout: float = 0.0
     train_time_projections: bool = False
     compile_sample_actions: bool = True
+    # 仅调整执行开销，不改变有效输入、模型参数或训练目标；默认保留历史路径。
+    compact_prefix: bool = False
+    checkpoint_joint_forward: bool = True
+    joint_gradient_checkpointing: bool = True
 
     @property
     def flow_dim(self) -> int:

@@ -83,6 +83,15 @@ def make_att_2d_masks(pad_masks, att_masks):
     return att_2d_masks & pad_2d_masks
 
 
+def compact_prefix_tokens(embs, pad_masks, att_masks):
+    # 只移除整批均不可见的列；保留部分样本有效的列及其相对位置。
+    # prefix 的 attention boundary 全为零，删除 padding 不改变有效 token 的位置编号。
+    if bool(att_masks.any()):
+        raise ValueError("prefix 压缩要求没有内部 attention boundary")
+    keep = pad_masks.any(dim=0)
+    return embs[:, keep], pad_masks[:, keep], att_masks[:, keep]
+
+
 class SAM2CrossAttnFusion(nn.Module):
     """Zero-gated cross-attention fusing frozen SAM2 memory-attention tokens into
     the current head-frame SigLIP visual tokens.
@@ -184,6 +193,7 @@ class PI0Pytorch(nn.Module):
             action_expert_config,
             use_adarms=[False, True] if self.pi05 else [False, False],
             precision=config.dtype,
+            joint_gradient_checkpointing=config.joint_gradient_checkpointing,
             tempo_mot_temporal_period=getattr(config, "temporal_attn_period", 4),
         )
         # TEMPO-MOT: number of observation frames (incl. current) fed to the video encoder. 1 = no memory.
@@ -420,6 +430,8 @@ class PI0Pytorch(nn.Module):
         bsize = pad_masks.shape[0]
         att_masks = att_masks[None, :].expand(bsize, len(att_masks))
 
+        if self.config.compact_prefix:
+            embs, pad_masks, att_masks = compact_prefix_tokens(embs, pad_masks, att_masks)
         return embs, pad_masks, att_masks
 
     def embed_suffix(self, state, noisy_actions, timestep, action_history=None):
@@ -546,7 +558,9 @@ class PI0Pytorch(nn.Module):
             )
             return suffix_out
 
-        suffix_out = self._apply_checkpoint(
+        # 逐层重计算已能限制激活显存，允许关闭包裹整段的重复重计算。
+        joint_forward = self._apply_checkpoint if self.config.checkpoint_joint_forward else lambda fn, *args: fn(*args)
+        suffix_out = joint_forward(
             forward_func, prefix_embs, suffix_embs, att_2d_masks_4d, position_ids, adarms_cond
         )
 
