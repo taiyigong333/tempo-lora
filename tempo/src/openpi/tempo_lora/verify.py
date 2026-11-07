@@ -8,8 +8,8 @@ import numpy as np
 import torch
 from torch.utils.data import default_collate
 
-from openpi.tempo_lora.checkpoint import artifact_references, load_policy_checkpoint, policy_state, restore_rng, save_policy, scheduler, seed_all
-from openpi.tempo_lora.config import ROOT
+from openpi.tempo_lora.checkpoint import artifact_references, load_policy_checkpoint, policy_state, publish_latest_checkpoint, restore_rng, save_policy, scheduler, seed_all
+from openpi.tempo_lora.config import ROOT, digest
 from openpi.tempo_lora.data import WindowDataset, json_write, policy_batch, split_data
 from openpi.tempo_lora.model import build_model, optimizer_groups
 from openpi.tempo_lora.train import check_caches
@@ -84,8 +84,10 @@ def verify(cfg):
     assert all(value > 0 for value in gradients.values()), gradients
     del trainable_before
     references = artifact_references(cfg)
-    checkpoint = output / "checkpoint.pt"
+    checkpoint = output / "step_00000003.pt"
     save_policy(checkpoint, model, optimizer, schedule, 3, cfg, references, best=float("inf"), stale=0)
+    publish_latest_checkpoint(checkpoint)
+    checkpoint = output / "latest.pt"
     noise = torch.randn(len(actions), model.flow_positions, model.flow_dim, device="cuda")
     model.eval()
     with torch.no_grad():
@@ -118,7 +120,8 @@ def verify(cfg):
             value = parameter.detach().cpu()
             torch.testing.assert_close(value, next_parameters[name], rtol=1e-5, atol=1e-7)
             update_error = max(update_error, (value - next_parameters[name]).abs().max().item())
-    result = {"losses": losses, "gradient_norm_sums": gradients, "max_parameter_updates": changes,
+    result = {"batch_size": cfg["training"]["batch_size"], "config_sha256": digest(cfg),
+              "losses": losses, "gradient_norm_sums": gradients, "max_parameter_updates": changes,
               "frozen_sha256_unchanged": frozen_before, "reload_output_max_error": (before_reload - after_reload).abs().max().item(),
               "resume_next_loss": resumed_loss, "baseline_next_loss": next_loss,
               "resume_update_max_error": update_error, "trainable_groups": report["groups"],

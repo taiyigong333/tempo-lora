@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Sampler
 
-from openpi.tempo_lora.checkpoint import artifact_references, load_policy_checkpoint, restore_rng, rng_state, save_policy, scheduler, seed_all
+from openpi.tempo_lora.checkpoint import artifact_references, find_latest_checkpoint, load_policy_checkpoint, publish_latest_checkpoint, restore_rng, rng_state, save_policy, scheduler, seed_all
 from openpi.tempo_lora.config import artifact_root
 from openpi.tempo_lora.data import WindowDataset, check_manifest, json_write, metadata, policy_batch, split_data
 from openpi.tempo_lora.model import build_model, optimizer_groups
@@ -94,10 +94,14 @@ def train_policy(cfg, *, resume=False, steps=None):
     total_steps = tc["steps"] if steps is None else steps
     output = Path(cfg["paths"]["run"])
     output.mkdir(parents=True, exist_ok=True)
-    latest_path = output / "latest.json"
-    if latest_path.exists() and not resume:
+    latest = find_latest_checkpoint(output)
+    if latest is not None and not resume:
         raise FileExistsError(f"已有训练 {output}，请 resume 或使用新实验目录")
-    saved = load_policy_checkpoint(json.loads(latest_path.read_text())["path"], cfg) if resume else None
+    if resume and latest is None:
+        raise FileNotFoundError(f"没有可恢复的完整检查点 {output}")
+    saved = load_policy_checkpoint(latest, cfg) if resume else None
+    if saved:
+        publish_latest_checkpoint(latest)
     model, report = build_model(cfg, train=True, state=saved["trainable"] if saved else None)
     model.cuda()
     json_write(output / "trainable_parameters.json", report)
@@ -171,7 +175,7 @@ def train_policy(cfg, *, resume=False, steps=None):
             if current % tc["save_interval"] == 0 or current == total_steps or early_stop:
                 destination = output / f"step_{current:08d}.pt"
                 save_policy(destination, model, optimizer, schedule, current, cfg, references, best=best, stale=stale)
-                json_write(latest_path, {"step": current, "path": str(destination)})
+                publish_latest_checkpoint(destination)
             if early_stop:
                 print(f"策略验证损失连续 {stale} 次未改善，早停", flush=True)
                 break

@@ -8,7 +8,7 @@ import numpy as np
 import torch
 
 from openpi.tempo_lora.config import ACTION_SPACE, UPSTREAM_COMMIT, artifact_root, digest, file_digest
-from openpi.tempo_lora.data import contract, split_data
+from openpi.tempo_lora.data import contract, json_write, split_data
 
 
 def seed_all(seed):
@@ -37,6 +37,25 @@ def atomic_save(value, path):
     temporary = path.with_suffix(path.suffix + ".tmp")
     torch.save(value, temporary)
     temporary.replace(path)
+
+
+def find_latest_checkpoint(directory):
+    paths = [path for path in Path(directory).glob("step_????????.pt")
+             if path.stem[5:].isdigit()]
+    # 原子完成的 step 文件优先，可恢复保存成功但尚未来得及更新指针的情况。
+    return max(paths, key=lambda path: int(path.stem[5:]), default=None)
+
+
+def publish_latest_checkpoint(checkpoint):
+    checkpoint = Path(checkpoint)
+    if not checkpoint.is_file():
+        raise FileNotFoundError(checkpoint)
+    step = int(checkpoint.stem[5:])
+    json_write(checkpoint.parent / "latest.json", {"step": step, "path": str(checkpoint.resolve())})
+    temporary = checkpoint.parent / "latest.pt.tmp"
+    temporary.unlink(missing_ok=True)
+    temporary.symlink_to(checkpoint.name)
+    temporary.replace(checkpoint.parent / "latest.pt")
 
 
 def scheduler(optimizer, warmup, total, minimum=.1):

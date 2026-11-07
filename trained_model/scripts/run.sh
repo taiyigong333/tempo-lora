@@ -18,4 +18,8 @@ if [[ "${1:-}" == "schedule" ]]; then
     shift
     exec uv run --no-sync python "$ROOT/trained_model/scripts/schedule_training.py" "$@"
 fi
+if [[ "${1:-}" == "benchmark" ]]; then
+    shift
+    exec uv run --no-sync python "$ROOT/trained_model/scripts/benchmark_batch.py" "$@"
+fi
 exec uv run --no-sync python scripts/piperx.py "$@"

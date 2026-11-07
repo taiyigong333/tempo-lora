@@ -103,6 +103,25 @@ def test_formal_training_cannot_start_early(monkeypatch):
         train_policy({"training": {"not_before": "2026-11-07T23:30:00+08:00"}})
 
 
+def test_latest_checkpoint_tracks_complete_saves(tmp_path):
+    import json
+    from openpi.tempo_lora.checkpoint import atomic_save, find_latest_checkpoint, publish_latest_checkpoint
+    assert find_latest_checkpoint(tmp_path) is None
+    first = tmp_path / "step_00003000.pt"
+    atomic_save({"step": 3000}, first)
+    publish_latest_checkpoint(first)
+    assert (tmp_path / "latest.pt").resolve() == first
+    assert json.loads((tmp_path / "latest.json").read_text())["step"] == 3000
+    # 中断发生在完整模型落盘之后、指针更新之前时，仍能发现新的完整文件。
+    second = tmp_path / "step_00006000.pt"
+    atomic_save({"step": 6000}, second)
+    (tmp_path / "step_00009000.pt.tmp").write_bytes(b"incomplete")
+    assert find_latest_checkpoint(tmp_path) == second
+    publish_latest_checkpoint(second)
+    assert (tmp_path / "latest.pt").resolve() == second
+    assert torch.load(tmp_path / "latest.pt", weights_only=True)["step"] == 6000
+
+
 def test_legacy_configuration_and_complete_config_discovery():
     from openpi.training.config import get_config
     assert Pi0Config().predict_ut is False

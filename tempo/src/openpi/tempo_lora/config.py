@@ -66,6 +66,9 @@ def configure_environment(cfg):
     os.environ["SAM2_REPO"] = cfg["paths"]["sam2_repo"]
     os.environ["SAM2_CKPT"] = cfg["paths"]["sam2_checkpoint"]
     os.environ["OPENPI_TOKENIZER_PATH"] = cfg["paths"]["tokenizer"]
+    allocator = cfg["training"].get("cuda_allocator")
+    if allocator:
+        os.environ["PYTORCH_CUDA_ALLOC_CONF"] = allocator
     proxy = cfg.get("wandb", {}).get("proxy")
     if proxy:
         # 仅影响本项目进程，复用服务器已有 W&B 专用出口。

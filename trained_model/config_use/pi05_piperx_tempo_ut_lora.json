@@ -72,7 +72,8 @@
   "training": {
     "not_before": "2026-11-07T23:30:00+08:00",
     "steps": 10000,
-    "batch_size": 4,
+    "batch_size": 32,
+    "cuda_allocator": "expandable_segments:True",
     "grad_accum_steps": 2,
     "num_workers": 4,
     "lora_lr": 0.00005,
@@ -83,7 +84,7 @@
     "min_lr_ratio": 0.1,
     "grad_clip": 1.0,
     "log_interval": 10,
-    "save_interval": 1000,
+    "save_interval": 3000,
     "eval_interval": 500,
     "eval_batches": 16,
     "patience": 10,

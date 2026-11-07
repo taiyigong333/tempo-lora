@@ -9,6 +9,7 @@ import time
 import traceback
 
 from openpi.tempo_lora.config import ROOT, artifact_root
+from openpi.tempo_lora.checkpoint import find_latest_checkpoint
 from openpi.tempo_lora.data import json_write
 
 
@@ -37,7 +38,7 @@ def run(cfg):
                 command = [sys.executable, str(ROOT / "tempo/scripts/piperx.py"), stage, "--config", str(cfg_path)]
                 if stage in ("mvae", "decoder") and (cache / stage / "last.pt").exists():
                     command.append("--resume")
-                if stage == "train" and (Path(cfg["paths"]["run"]) / "latest.json").exists():
+                if stage == "train" and find_latest_checkpoint(cfg["paths"]["run"]) is not None:
                     command.append("--resume")
                 with (ROOT / "trained_model/logs" / f"{stage}_alltrain.log").open("a") as log:
                     subprocess.run(command, check=True, cwd=ROOT / "tempo", stdout=log, stderr=subprocess.STDOUT)

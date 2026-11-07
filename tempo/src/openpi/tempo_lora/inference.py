@@ -12,7 +12,7 @@ import torch
 from openpi import transforms
 from openpi.policies.policy import Policy
 from openpi.shared.normalize import deserialize_json
-from openpi.tempo_lora.checkpoint import load_policy_checkpoint
+from openpi.tempo_lora.checkpoint import find_latest_checkpoint, load_policy_checkpoint
 from openpi.tempo_lora.config import artifact_root, configure_environment, make_train_config, model_config
 from openpi.tempo_lora.data import WindowDataset, history_buckets, json_write, split_data
 from openpi.tempo_lora.model import build_model
@@ -24,7 +24,10 @@ def checkpoint_file(path):
         return path
     if (path / "best.pt").exists():
         return path / "best.pt"
-    return Path(json.loads((path / "latest.json").read_text())["path"])
+    latest = find_latest_checkpoint(path)
+    if latest is None:
+        raise FileNotFoundError(f"没有可用的策略检查点 {path}")
+    return latest
 
 
 def create_policy(checkpoint, *, pytorch_device=None, sample_kwargs=None):

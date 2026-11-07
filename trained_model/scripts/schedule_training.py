@@ -10,7 +10,7 @@ import time
 import traceback
 from zoneinfo import ZoneInfo
 
-from openpi.tempo_lora.config import ROOT, configure_environment, file_digest, read_config
+from openpi.tempo_lora.config import ROOT, configure_environment, digest, file_digest, read_config
 from openpi.tempo_lora.data import json_write
 from openpi.tempo_lora.train import check_caches
 
@@ -29,6 +29,8 @@ def check_ready(plan):
     if file_digest(report_path) != plan["verification_sha256"]:
         raise ValueError("完整验证报告发生变化")
     report = json.loads(report_path.read_text())
+    if report.get("config_sha256") != digest(cfg):
+        raise ValueError("完整验证报告与正式训练配置不一致")
     if not (report.get("normal_policy_entry") and report.get("online_episode_reset")
             and report["reload_output_max_error"] == 0 and report["resume_update_max_error"] == 0):
         raise ValueError("完整模型集成验证未通过")
