@@ -50,7 +50,7 @@
     "sam2_checkpoint": "origin_checkpoint/sam2.1_hiera_tiny.pt",
     "artifacts": "trained_model/cache/piperx_alltrain_v1",
     "feature_reuse_source": "trained_model/cache/piperx_v1",
-    "run": "trained_model/checkpoints/pi05_piperx_tempo_ut_lora/formal_20261107_2330"
+    "run": "trained_model/checkpoints/pi05_piperx_tempo_ut_lora/formal_20261108_b16_g1"
   },
   "auxiliary": {
     "window": 16,
@@ -70,12 +70,13 @@
     "warmup_steps": 100
   },
   "training": {
-    "not_before": "2026-11-07T23:30:00+08:00",
     "steps": 10000,
-    "batch_size": 32,
+    "batch_size": 16,
     "cuda_allocator": "expandable_segments:True",
-    "grad_accum_steps": 2,
+    "grad_accum_steps": 1,
     "num_workers": 4,
+    "array_cache_size": 128,
+    "data_loader_timeout": 120,
     "lora_lr": 0.00005,
     "tempo_lr": 0.0001,
     "ut_lr": 0.00005,

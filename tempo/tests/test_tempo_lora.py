@@ -122,6 +122,32 @@ def test_latest_checkpoint_tracks_complete_saves(tmp_path):
     assert torch.load(tmp_path / "latest.pt", weights_only=True)["step"] == 6000
 
 
+def test_array_cache_bounds_mmap_files_and_keeps_views_valid(tmp_path):
+    from collections import OrderedDict
+    import gc
+    from pathlib import Path
+    from openpi.tempo_lora.data import WindowDataset
+    directory = tmp_path / "sam2"
+    directory.mkdir()
+    for episode in range(100):
+        np.save(directory / f"episode_{episode:06d}_latent.npy", np.full((2, 3), episode, np.float32))
+    dataset = WindowDataset.__new__(WindowDataset)
+    dataset.cache = tmp_path
+    dataset._array_cache_size = 8
+    dataset._arrays = OrderedDict()
+    fd_path = Path("/proc/self/fd")
+    before = len(list(fd_path.iterdir())) if fd_path.exists() else 0
+    retained = dataset.array("sam2", 0, "latent")
+    for _ in range(3):
+        for episode in range(100):
+            np.testing.assert_array_equal(dataset.array("sam2", episode, "latent"), episode)
+            assert len(dataset._arrays) <= 8
+    np.testing.assert_array_equal(retained, 0)
+    gc.collect()
+    if fd_path.exists():
+        assert len(list(fd_path.iterdir())) <= before + 10
+
+
 def test_legacy_configuration_and_complete_config_discovery():
     from openpi.training.config import get_config
     assert Pi0Config().predict_ut is False

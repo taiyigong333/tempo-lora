@@ -1,5 +1,6 @@
 """来源划分、窗口动作语义与离线/在线共享历史。"""
 
+from collections import OrderedDict
 from datetime import datetime
 import json
 from pathlib import Path
@@ -222,7 +223,11 @@ class WindowDataset(Dataset):
             self.index.extend((ep, t) for t in range(max(0, len(row["action"]) - self.window + 1)))
         if not self.index:
             raise ValueError(f"没有可用的 {stage} 窗口")
-        self._arrays = {}
+        # 每个 worker 都有独立缓存，限制 mmap 数量，给张量队列保留文件句柄。
+        self._array_cache_size = int(cfg["training"].get("array_cache_size", 128))
+        if self._array_cache_size < 1:
+            raise ValueError("array_cache_size 必须为正整数")
+        self._arrays = OrderedDict()
         from openpi.shared.normalize import load
         self.stats = load(self.cache / "norm")
         self.normalize = transforms.Normalize(self.stats, use_quantiles=True)
@@ -237,6 +242,10 @@ class WindowDataset(Dataset):
         if key not in self._arrays:
             path = self.cache / directory / f"episode_{ep:06d}_{name}.npy"
             self._arrays[key] = np.load(path, mmap_mode="r")
+            if len(self._arrays) > self._array_cache_size:
+                # 引用计数自动回收 mmap，调用方仍持有的视图保持有效。
+                self._arrays.popitem(last=False)
+        self._arrays.move_to_end(key)
         return self._arrays[key]
 
     def __len__(self):

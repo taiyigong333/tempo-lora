@@ -124,9 +124,11 @@ def train_policy(cfg, *, resume=False, steps=None):
     batches = ResumeBatchSampler(len(train_ds), tc["batch_size"], cfg["seed"], start * accumulation, total_steps * accumulation)
     loader = DataLoader(train_ds, batch_sampler=batches, num_workers=tc["num_workers"],
                         pin_memory=True, persistent_workers=tc["num_workers"] > 0,
+                        timeout=tc.get("data_loader_timeout", 120) if tc["num_workers"] > 0 else 0,
                         generator=torch.Generator().manual_seed(cfg["seed"]))
     val_loader = DataLoader(monitor_ds, batch_size=tc["batch_size"], shuffle=False, num_workers=tc["num_workers"],
                             pin_memory=True, persistent_workers=tc["num_workers"] > 0,
+                            timeout=tc.get("data_loader_timeout", 120) if tc["num_workers"] > 0 else 0,
                             generator=torch.Generator().manual_seed(0))
     references = saved["references"] if saved else artifact_references(cfg)
     json_write(output / "config.json", cfg)
