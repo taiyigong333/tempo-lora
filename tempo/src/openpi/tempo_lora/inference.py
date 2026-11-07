@@ -34,11 +34,14 @@ def create_policy(checkpoint, *, pytorch_device=None, sample_kwargs=None):
     model, _ = build_model(cfg, state=saved["trainable"])
     dc = make_train_config(cfg).data.create(artifact_root(cfg), model_config(cfg))
     norm = deserialize_json(saved["norm_stats"])
+    def native_actions(result):
+        # 归一化统计经 JSON 加载可能是 float64，控制接口固定接收 float32。
+        return {**result, "actions": np.asarray(result["actions"], dtype=np.float32)}
     return Policy(model, is_pytorch=True, pytorch_device=pytorch_device or "cuda",
                   transforms=[*dc.data_transforms.inputs, transforms.Normalize(norm, use_quantiles=True),
                               *dc.model_transforms.inputs],
                   output_transforms=[*dc.model_transforms.outputs, transforms.Unnormalize(norm, use_quantiles=True),
-                                     *dc.data_transforms.outputs],
+                                     *dc.data_transforms.outputs, native_actions],
                   sample_kwargs=sample_kwargs or {"num_steps": cfg["inference"]["denoise_steps"]},
                   metadata={"config": cfg["name"], "native_action_dim": cfg["data"]["action_dim"],
                             "action_horizon": cfg["model"]["action_horizon"],
@@ -108,14 +111,29 @@ class OnlinePolicy(BasePolicy):
     def infer(self, obs, *, noise=None):
         if "episode_id" not in obs:
             raise ValueError("在线输入必须携带 episode_id，防止跨轨迹状态泄漏")
-        if obs.get("reset", False) or self.episode != obs["episode_id"]:
-            self.reset()
-            self.episode = obs["episode_id"]
+        new_episode = obs.get("reset", False) or self.episode != obs["episode_id"]
         frames = obs.get("feedback")
         if frames is None:
             frames = [obs]
         if not frames:
             raise ValueError("feedback 不能为空")
+        # 先核验整批反馈，避免输入错误在处理一半后污染在线记忆。
+        previous = None if new_episode else self.last_timestamp
+        for frame in frames:
+            stamp = float(frame["timestamp"])
+            if not np.isfinite(stamp) or (previous is not None and abs(stamp - previous - 1 / self.cfg["data"]["fps"]) > .002):
+                raise ValueError("需要完整连续的 30Hz 实测反馈")
+            state = np.asarray(frame["state"])
+            if state.shape != (self.cfg["data"]["action_dim"],) or not np.isfinite(state).all():
+                raise ValueError("反馈状态维度或数值不合法")
+            for camera in self.cfg["data"]["cameras"]:
+                rgb = np.asarray(frame["images"][camera])
+                if rgb.shape != (224, 224, 3) or rgb.dtype != np.uint8:
+                    raise ValueError("在线图像需要 224×224 RGB uint8")
+            previous = stamp
+        if new_episode:
+            self.reset()
+            self.episode = obs["episode_id"]
         timer = time.monotonic()
         for frame in frames:
             self.ingest(frame)

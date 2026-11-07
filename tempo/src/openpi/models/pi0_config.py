@@ -63,7 +63,7 @@ class Pi0Config(_model.BaseModelConfig):
     # Raw dataset action dim of one history vector (14 = YAM dual-arm, 7 = single arm).
     action_history_dim: int = 14
 
-    # --- Prediction head: u_t latent (default) vs. direct action-chunk regression ---
+    # --- Prediction head: u_t latent vs. direct action-chunk regression ---
     # True  == the flow-matching target is the `ut_dim` MVAE latent mu_v of the observation
     #          window starting at t; a frozen decoder (`ut_decoder_path`) turns the denoised
     #          latent into the action chunk at inference.

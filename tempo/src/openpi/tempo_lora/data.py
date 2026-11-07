@@ -274,7 +274,9 @@ def policy_batch(batch, device):
     def convert(value):
         if isinstance(value, dict):
             return {key: convert(item) for key, item in value.items()}
-        return torch.as_tensor(value, device=device)
+        tensor = torch.as_tensor(value, device=device)
+        # quantile 序列化可能恢复为 float64，统一策略浮点输入，避免隐式双精度 flow。
+        return tensor.float() if tensor.is_floating_point() else tensor
 
     sample = convert(batch)
     actions = sample.pop("actions")

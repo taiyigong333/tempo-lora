@@ -159,3 +159,4 @@ def test_online_feedback_matches_offline_and_resets():
     assert online.frame == 0 and online.sam.count == 1 and online.inputs()["action_history_is_pad"].all()
     with pytest.raises(ValueError, match="连续"):
         online.infer({"episode_id": "b", "timestamp": 10.5, "state": states[1], "images": images})
+    assert online.frame == 0 and online.sam.count == 1
