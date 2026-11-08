@@ -11,6 +11,10 @@ import cv2
 import numpy as np
 
 
+class CameraFrameError(RuntimeError):
+    """帧龄或双图同步尚未满足要求，预热时可有界等待，运行时立即报错。"""
+
+
 def letterbox(rgb):
     height, width = rgb.shape[:2]
     scale = min(224 / width, 224 / height)
@@ -36,7 +40,15 @@ class RealSenseCapture:
             pipe, config = rs.pipeline(), rs.config()
             config.enable_device(settings["serial"])
             config.enable_stream(rs.stream.color, settings["width"], settings["height"], rs.format.rgb8, settings["fps"])
-            profile = pipe.start(config)
+            try:
+                profile = pipe.start(config)
+            except RuntimeError as error:
+                if "errno=16" in str(error) or "Device or resource busy" in str(error):
+                    raise RuntimeError(
+                        f"相机 {name}（{settings['serial']}）正被其他程序占用。"
+                        "请先在占用程序中释放相机或正常退出，"
+                        "再在Tempo点击“释放相机”后重新“开启相机”。") from error
+                raise
             self.pipelines.append((name, pipe))
             options = parameters["devices"][settings["name"]]["configured_options"]
             for sensor in profile.get_device().query_sensors():
@@ -177,13 +189,13 @@ class CameraStream:
                 slot = available[np.argmax(times[index, available])]
                 image_stamp = float(times[index, slot])
                 if stamp - image_stamp > self.cfg["max_camera_age_s"]:
-                    raise RuntimeError("相机帧陈旧")
+                    raise CameraFrameError(f"相机 {name} 帧陈旧，帧龄 {stamp - image_stamp:.3f} 秒")
                 images[name] = view[index, slot].copy()
                 capture_times[name] = image_stamp
         finally:
             self.lock.release()
         if max(capture_times.values()) - min(capture_times.values()) > self.cfg["max_pair_skew_s"]:
-            raise RuntimeError("双相机时间差过大")
+            raise CameraFrameError("双相机时间差过大")
         return {"images": images, "capture_timestamps": capture_times}
 
     def wait_ready(self, cancel, *, after=None):
@@ -193,7 +205,7 @@ class CameraStream:
                 frame = self.snapshot()
                 if after is None or min(frame["capture_timestamps"].values()) > after:
                     return frame
-            except LookupError:
+            except (LookupError, CameraFrameError):
                 pass
             if time.monotonic() >= deadline:
                 raise TimeoutError("双相机等待新帧超时")

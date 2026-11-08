@@ -36,7 +36,7 @@
     "robot_commands": 0
   },
   "validation": {
-    "client_unit_tests_passed": 24,
+    "client_unit_tests_passed": 29,
     "server_regression_tests_passed": 18,
     "syntax_check": "passed",
     "locked_offline_sync": "passed",
@@ -44,7 +44,7 @@
     "sdk_and_camera_dependency_import": "passed_without_opening_hardware"
   },
   "pending": [
-    "真实双相机和CAN持续只读联调",
+    "真实CAN参与的持续只读推理联调",
     "真实持续吞吐评测",
     "现场机器人运动与抓取成功率"
   ],
@@ -94,6 +94,26 @@
     "robot_commands": 0,
     "regression_log": "client/logs/continuous_cameras/tests.log",
     "integration_log": "client/logs/continuous_cameras/integration.json",
-    "real_usb_validation": "pending_other_client_holds_devices"
+    "real_usb_validation": "passed_open_idle_preview_and_reuse_see_camera_open_fix"
+  },
+  "camera_open_fix": {
+    "capture": "real_realsense",
+    "gui": "running_desktop",
+    "idle_preview_updates": true,
+    "same_process": true,
+    "preview_camera_count": 2,
+    "old_idle_owner_exited": 4119924,
+    "robot_commands": 0,
+    "kept_streaming_after_verification": true,
+    "camera_process_id": 637357,
+    "first_open_success": true,
+    "repeated_open_reused": true,
+    "wired_probe": "passed",
+    "causes": [
+      "idle_old_client_device_ownership",
+      "startup_transient_stale_frame_rejected_before_warmup_completed"
+    ],
+    "report": "client/logs/camera_busy_fix/real_camera_verification.json",
+    "tests": "client/logs/camera_busy_fix/tests.log"
   }
 }

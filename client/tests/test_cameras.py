@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from tempo_client.cameras import CameraStream
+from tempo_client.cameras import CameraFrameError, CameraStream, RealSenseCapture
 from tempo_client.live import LiveFeedback
 from tempo_client.session import SessionWorker
 
@@ -188,6 +188,51 @@ class CameraTests(unittest.TestCase):
         self.assertIsNone(stream.process)
         self.assertTrue(stream.channel.closed)
         stream.close()
+
+    def test_warmup_waits_for_fresh_synchronized_frames(self):
+        stream = CameraStream(self.cfg)
+        frame = {"images": {}, "capture_timestamps": {"head": time.time(), "left_wrist": time.time()}}
+        with patch.object(stream, "snapshot", side_effect=[CameraFrameError("相机帧陈旧"),
+                                                           CameraFrameError("双相机时间差过大"), frame]):
+            self.assertIs(stream.wait_ready(threading.Event()), frame)
+
+    def test_warmup_freshness_wait_is_bounded(self):
+        stream = CameraStream(self.cfg)
+        with patch.dict(stream.cfg, startup_timeout_s=.02), patch.object(
+                stream, "snapshot", side_effect=CameraFrameError("相机帧陈旧")):
+            with self.assertRaisesRegex(TimeoutError, "等待新帧超时"):
+                stream.wait_ready(threading.Event())
+
+    def test_device_failure_still_fails_immediately_during_warmup(self):
+        stream = CameraStream(self.cfg)
+        with patch.object(stream, "snapshot", side_effect=RuntimeError("设备读取失败")) as snapshot:
+            with self.assertRaisesRegex(RuntimeError, "设备读取失败"):
+                stream.wait_ready(threading.Event())
+        snapshot.assert_called_once()
+
+    def test_active_stream_rejects_stale_frames(self):
+        stream = self.make_stream()
+        stream.wait_ready(threading.Event())
+        with self.assertRaises(CameraFrameError):
+            stream.snapshot(time.time() + 1)
+
+    def test_busy_camera_error_identifies_device_and_cleanup(self):
+        self.parameters.write_text('{"devices":{"front":{"configured_options":{}},"wrist":{"configured_options":{}}}}')
+        cfg = copy.deepcopy(self.cfg["live"])
+        for index, name in enumerate(cfg["cameras"]):
+            cfg["cameras"][name].update(name="front" if index == 0 else "wrist", serial=f"serial-{index}", width=640, height=480)
+        sdk = Mock()
+        first, second = Mock(), Mock()
+        first.start.return_value.get_device.return_value.query_sensors.return_value = []
+        second.start.side_effect = RuntimeError("xioctl(VIDIOC_S_FMT) failed, errno=16 Device or resource busy")
+        sdk.pipeline.side_effect = [first, second]
+        capture = RealSenseCapture(cfg)
+        with patch.dict("sys.modules", pyrealsense2=sdk):
+            with self.assertRaisesRegex(RuntimeError, "left_wrist.*serial-1.*其他程序占用"):
+                capture.start(threading.Event())
+            capture.close()
+        first.stop.assert_called_once()
+        second.stop.assert_not_called()
 
 
 if __name__ == "__main__":
