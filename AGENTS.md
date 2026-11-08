@@ -14,3 +14,4 @@
 - 实施小而聚焦的修改，修改后运行基础回归及可行的完整模型验证。区分代码验证、短程诊断、正式训练和真机评测。
 - 每次重要变化同步维护交接，包括命令、配置、状态、W&B 地址和实际结果。
 - 执行提速已从完整step500安全生效，先读 docs/训练性能优化.md 和 trained_model/runtime/performance_20261108/transition.json。正式执行compact_prefix=true、checkpoint_joint_forward=false、joint_gradient_checkpointing=true，约3.18秒/步；同一run与W&B继续。实际配置trained_model/runtime/performance_20261108/config.json，切换程序已完成，勿重跑transition.py或从头训练。
+- 正式10000步训练与32样本离线评估已完成，先读 docs/训练完成报告.md 和 trained_model/runtime/final_verification_20261108.json。最终模型/优化器/scheduler均10000、W&B finished，禁止例行巡检重新启动训练；后续新实验需按用户新要求执行。
