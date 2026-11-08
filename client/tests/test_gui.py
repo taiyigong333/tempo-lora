@@ -20,8 +20,12 @@ class GuiTests(unittest.TestCase):
 
     def tearDown(self):
         if not self.app.closed:
-            self.app.busy = False
-            self.app.close()
+            self.app.worker.stop()
+            if self.app.worker.thread is not None:
+                self.app.worker.thread.join(5)
+            self.app.worker.close_cameras()
+            self.app.closed = True
+            self.root.destroy()
 
     def test_starts_and_stops_without_blocking_ui(self):
         self.app.worker.start = Mock()
@@ -52,12 +56,23 @@ class GuiTests(unittest.TestCase):
     def test_close_during_task_waits_for_cancellation(self):
         self.app.busy = True
         self.app.worker.stop = Mock()
+        self.app.worker.start = Mock()
         self.app.close()
         self.assertTrue(self.app.closing)
         self.assertFalse(self.app.closed)
         self.app.worker.stop.assert_called_once()
         self.app._handle("done", {"outcome": "cancelled", "log_dir": "/tmp/tempo-gui-test"})
+        self.app._release_for_exit()
+        self.assertFalse(self.app.closed)
+        self.app._handle("done", {"mode": "release", "outcome": "completed", "log_dir": "/tmp/tempo-gui-test"})
         self.assertTrue(self.app.closed)
+
+    def test_release_does_not_require_valid_configuration(self):
+        self.app.config_path.set("/missing/tempo-config.yaml")
+        self.app.worker.start = Mock()
+        self.app.start("release")
+        self.app.worker.start.assert_called_once()
+        self.assertEqual(self.app.worker.start.call_args.args[0], "release")
 
 
 if __name__ == "__main__":

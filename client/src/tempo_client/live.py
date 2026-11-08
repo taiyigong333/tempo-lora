@@ -2,26 +2,17 @@
 
 from collections import deque
 import importlib
-import json
 from pathlib import Path
 import queue
 import sys
 import threading
 import time
 
-import cv2
 import numpy as np
 
 
-def letterbox(rgb):
-    height, width = rgb.shape[:2]
-    scale = min(224 / width, 224 / height)
-    new_width, new_height = max(1, round(width * scale)), max(1, round(height * scale))
-    canvas = np.zeros((224, 224, 3), np.uint8)
-    left, top = (224 - new_width) // 2, (224 - new_height) // 2
-    canvas[top:top + new_height, left:left + new_width] = cv2.resize(
-        rgb, (new_width, new_height), interpolation=cv2.INTER_AREA)
-    return canvas
+# 保留原导入路径，图像处理与相机进程共享同一实现。
+from tempo_client.cameras import CameraStream, letterbox
 
 
 def interpolate(samples, stamp, max_gap):
@@ -38,7 +29,7 @@ def interpolate(samples, stamp, max_gap):
 
 
 class LiveFeedback:
-    def __init__(self, cfg):
+    def __init__(self, cfg, *, cameras=None):
         self.cfg = cfg["live"]
         self.fps = cfg["model"]["fps"]
         self.stop = threading.Event()
@@ -47,7 +38,8 @@ class LiveFeedback:
         self.arm = None
         self.threads = []
         self.joints, self.gripper = deque(maxlen=180), deque(maxlen=180)
-        self.images = {name: deque(maxlen=60) for name in self.cfg["cameras"]}
+        self.cameras = cameras
+        self.owns_cameras = cameras is None
         self.pending = queue.Queue(maxsize=self.cfg["max_pending_frames"])
 
     def _worker(self, function, *args):
@@ -95,59 +87,12 @@ class LiveFeedback:
                         history.append((stamp, value.copy()))
             self.stop.wait(1 / self.cfg["sample_hz"])
 
-    def _sample_camera(self, name, settings):
-        import pyrealsense2 as rs
-        parameters = json.loads(Path(self.cfg["camera_parameters"]).read_text())
-        options = parameters["devices"][settings["name"]]["configured_options"]
-        pipe, config = rs.pipeline(), rs.config()
-        config.enable_device(settings["serial"])
-        config.enable_stream(rs.stream.color, settings["width"], settings["height"], rs.format.rgb8, settings["fps"])
-        started = False
-        try:
-            profile = pipe.start(config)
-            started = True
-            for sensor in profile.get_device().query_sensors():
-                if sensor.supports(rs.option.global_time_enabled):
-                    sensor.set_option(rs.option.global_time_enabled, 1)
-                for key in sorted(options, key=lambda key: (key not in ("enable_auto_exposure", "enable_auto_white_balance"), key)):
-                    option = getattr(rs.option, key)
-                    if sensor.supports(option):
-                        sensor.set_option(option, options[key])
-            while not self.stop.is_set():
-                frame = pipe.wait_for_frames(500).get_color_frame()
-                if not frame or frame.get_frame_timestamp_domain() not in (
-                        rs.timestamp_domain.global_time, rs.timestamp_domain.system_time):
-                    continue
-                stamp = frame.get_timestamp() / 1000
-                if not 0 <= time.time() - stamp <= self.cfg["max_camera_age_s"]:
-                    continue
-                image = letterbox(np.asanyarray(frame.get_data()))
-                with self.lock:
-                    history = self.images[name]
-                    if not history or stamp > history[-1][0]:
-                        history.append((stamp, image))
-        finally:
-            if started:
-                pipe.stop()
-
     def _frame(self, stamp):
         with self.lock:
             state = np.concatenate([interpolate(history, stamp, self.cfg["max_feedback_age_s"])
                                     for history in (self.joints, self.gripper)])
-            images, stamps = {}, []
-            for name, history in self.images.items():
-                available = [value for value in history if value[0] <= stamp]
-                if not available:
-                    raise LookupError("等待相机帧")
-                image_stamp, image = available[-1]
-                if stamp - image_stamp > self.cfg["max_camera_age_s"]:
-                    raise RuntimeError("相机帧陈旧")
-                images[name] = image.copy()
-                stamps.append(image_stamp)
-            if max(stamps) - min(stamps) > self.cfg["max_pair_skew_s"]:
-                raise RuntimeError("双相机时间差过大")
-        return {"timestamp": stamp, "state": state, "images": images,
-                "capture_timestamps": dict(zip(images, stamps))}
+        capture = self.cameras.snapshot(stamp)
+        return {"timestamp": stamp, "state": state, **capture}
 
     def _produce(self, origin):
         index = 0
@@ -192,14 +137,12 @@ class LiveFeedback:
         try:
             self._connect_arm()
             self._start(self._sample_arm)
-            for name, settings in self.cfg["cameras"].items():
-                self._start(self._sample_camera, name, settings)
             deadline = time.monotonic() + self.cfg["startup_timeout_s"]
             while not self.stop.is_set():
                 if self.error is not None:
                     raise RuntimeError(str(self.error)) from self.error
                 with self.lock:
-                    ready = len(self.joints) > 1 and len(self.gripper) > 1 and all(self.images.values())
+                    ready = len(self.joints) > 1 and len(self.gripper) > 1
                 if ready:
                     break
                 if time.monotonic() >= deadline:
@@ -209,6 +152,11 @@ class LiveFeedback:
                 raise RuntimeError(str(self.error)) from self.error
             if self.stop.is_set():
                 raise InterruptedError("硬件启动已取消")
+            if self.owns_cameras:
+                self.cameras = CameraStream({"live": self.cfg})
+                self.cameras.start()
+            # 每轮只接收本轮CAN就绪之后的新图，持续视频流不携带上一轮历史。
+            self.cameras.wait_ready(self.stop, after=time.time())
             self._start(self._produce, time.time())
             return self
         except BaseException:
@@ -219,5 +167,9 @@ class LiveFeedback:
         self.stop.set()
         for thread in self.threads:
             thread.join(timeout=2)
-        if self.arm is not None:
-            self.arm.disconnect()
+        try:
+            if self.arm is not None:
+                self.arm.disconnect()
+        finally:
+            if self.owns_cameras and self.cameras is not None:
+                self.cameras.close()

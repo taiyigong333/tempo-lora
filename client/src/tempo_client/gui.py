@@ -29,6 +29,7 @@ class TempoApp:
         self.duration = tk.StringVar(value="10")
         self.batch_size = tk.StringVar(value="4")
         self.status = tk.StringVar(value="就绪，先检查模型连接")
+        self.camera_status = tk.StringVar(value="双相机尚未开启；首次开启后持续采集")
         self.endpoint = tk.StringVar(value="有线连接待检查")
         self.model = tk.StringVar(value="模型身份待确认")
         self.latency = tk.StringVar(value="— ms")
@@ -88,11 +89,12 @@ class TempoApp:
         toolbar = ttk.Frame(controls)
         toolbar.grid(row=1, column=0, columnspan=7, sticky="w", pady=(12, 10))
         for index, (text, mode) in enumerate((("启动模型服务", "service"), ("检查连接", "probe"),
-                                             ("录制数据回放", "replay"), ("现场只读推理", "live"))):
+                                             ("录制数据回放", "replay"), ("现场只读推理", "live"),
+                                             ("开启相机", "camera"), ("释放相机", "release"))):
             self._button(toolbar, text, lambda mode=mode: self.start(mode), row=0, column=index, padx=(0, 8))
         self.stop_button = ttk.Button(toolbar, text="停止当前任务", command=self.stop, state="disabled")
-        self.stop_button.grid(row=0, column=4)
-        ttk.Button(toolbar, text="打开日志", command=self.open_logs).grid(row=0, column=5, padx=(8, 0))
+        self.stop_button.grid(row=0, column=6)
+        ttk.Button(toolbar, text="打开日志", command=self.open_logs).grid(row=0, column=7, padx=(8, 0))
         ttk.Label(controls, text="回放数据").grid(row=2, column=0, sticky="w", padx=(0, 10))
         self.replay_entry = ttk.Entry(controls, textvariable=self.replay_path)
         self.replay_entry.grid(row=2, column=1, columnspan=5, sticky="ew")
@@ -106,6 +108,8 @@ class TempoApp:
         self.batch_entry = ttk.Spinbox(options, from_=1, to=60, width=6, textvariable=self.batch_size)
         self.batch_entry.pack(side="left", padx=(8, 20))
         ttk.Label(options, text="现场采样前先释放其他程序占用的双相机", style="Muted.TLabel").pack(side="left")
+        ttk.Label(controls, textvariable=self.camera_status, style="Muted.TLabel").grid(
+            row=4, column=0, columnspan=7, sticky="w", pady=(8, 0))
 
         views = ttk.Frame(page)
         views.grid(row=4, column=0, sticky="ew", pady=(0, 12))
@@ -175,26 +179,28 @@ class TempoApp:
         if self.busy:
             return
         try:
-            cfg = load_config(self.config_path.get())
-            duration, batch = float(self.duration.get()), int(self.batch_size.get())
-            if not np.isfinite(duration) or not 0 < duration <= 600 or not 1 <= batch <= 60:
-                raise ValueError("只读时长需为1至600秒，每批反馈需为1至60帧")
-            if mode == "replay" and not Path(self.replay_path.get()).is_file():
-                raise ValueError("请选择有效的NPZ录制反馈文件")
-            self.endpoint.set(f"{cfg['connection']['local_ip']} → {cfg['connection']['host']}:{cfg['connection']['port']}")
+            duration, batch = 10, 4
+            if mode != "release":
+                cfg = load_config(self.config_path.get())
+                duration, batch = float(self.duration.get()), int(self.batch_size.get())
+                if not np.isfinite(duration) or not 0 < duration <= 600 or not 1 <= batch <= 60:
+                    raise ValueError("只读时长需为1至600秒，每批反馈需为1至60帧")
+                if mode == "replay" and not Path(self.replay_path.get()).is_file():
+                    raise ValueError("请选择有效的NPZ录制反馈文件")
+                self.endpoint.set(f"{cfg['connection']['local_ip']} → {cfg['connection']['host']}:{cfg['connection']['port']}")
             self.worker.start(mode, self.config_path.get(), replay_path=self.replay_path.get(),
                               duration=duration, batch_size=batch)
         except Exception as error:
             messagebox.showerror("无法启动任务", str(error), parent=self.root)
             return
         self._set_busy(True)
-        self.model.set("模型身份待确认")
+        if mode in ("probe", "service", "replay", "live"):
+            self.model.set("模型身份待确认")
         self.latency.set("— ms")
         self.progress.set("0 批次 · 0 反馈帧 · 0 机器人指令")
         self.batch_count = self.frame_count = 0
-        self.images.clear()
-        for label in self.preview_labels.values():
-            label.configure(image="", text="等待本轮反馈图像", height=12)
+        if mode == "replay":
+            self._clear_previews("等待回放图像")
         self.status.set("正在启动任务")
         self._append(f"开始任务 {mode}")
 
@@ -208,10 +214,20 @@ class TempoApp:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         subprocess.Popen(["xdg-open", str(self.log_dir)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+    def _clear_previews(self, text):
+        self.images.clear()
+        for label in self.preview_labels.values():
+            label.configure(image="", text=text, height=12)
+
     def _handle(self, kind, value):
         if kind == "status":
             self.status.set(value)
             self._append(value)
+        elif kind == "camera_status":
+            self.camera_status.set(value)
+            self._append(value)
+            if value == "相机已释放":
+                self._clear_previews(value)
         elif kind == "metadata":
             self.model.set(f"TEMPO · {value['step']} 步 · {value['action_horizon']}×{value['native_action_dim']}")
             self._append(f"有线握手通过，模型 {value['checkpoint']}")
@@ -241,8 +257,14 @@ class TempoApp:
             self._append(status + (" · " + value["error"] if "error" in value else ""))
             self._append(f"日志保存于 {value['log_dir']}")
             if self.closing:
-                self.closed = True
-                self.root.destroy()
+                if value.get("mode") != "release":
+                    self.root.after(20, self._release_for_exit)
+                elif value["outcome"] == "completed":
+                    self.closed = True
+                    self.root.destroy()
+                else:
+                    self.closing = False
+                    self.status.set("释放相机失败，请检查日志后重试退出")
 
     def _drain(self):
         try:
@@ -254,15 +276,27 @@ class TempoApp:
         except queue.Empty:
             pass
         if not self.closed:
+            frame = self.worker.take_preview()
+            if frame is not None and self.worker.preview_enabled.is_set():
+                self._handle("frame", frame)
             self.root.after(50, self._drain)
 
     def close(self):
+        if self.closing:
+            return
+        self.closing = True
         if self.busy:
-            self.closing = True
             self.stop()
         else:
-            self.closed = True
-            self.root.destroy()
+            self._release_for_exit()
+
+    def _release_for_exit(self):
+        if self.worker.thread is not None and self.worker.thread.is_alive():
+            self.root.after(20, self._release_for_exit)
+            return
+        self.worker.start("release", self.config_path.get())
+        self._set_busy(True)
+        self.status.set("正在关闭相机并退出")
 
 
 def main():

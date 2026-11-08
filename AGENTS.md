@@ -18,3 +18,4 @@
 - PiperX有线客户端部署在 `/home/cv/gcj/project/baseline_fast/tempo-lora`，先读 `docs/PiperX客户端部署.md` 和验证JSON。客户端独立环境在client/.venv，现场已有其他GUI，访问相机前核对占用。
 - Tempo在线服务会话tempo_lora_inference，192.168.50.2:8000，最终10000步模型。当前客户端只读，输出绝对关节rad与夹爪m，实机执行需用户进一步明确要求。
 - PiperX图形入口为根目录run_gui.sh，GUI后台任务位于client/src/tempo_client/session.py。用户已明确授权完整项目推送至公开tempo-lora仓库，后续相关提交可继续同步；GUI测试应使用独立显示环境和录制反馈。
+- 相机由SessionWorker跨轮持有，首次开启后持续采集与覆盖旧帧；停止推理保留视频流，退出或显式释放才关闭。参考OpenPI持续相机生命周期，真实设备被占用时使用合成相机验证，不抢占其他客户端。

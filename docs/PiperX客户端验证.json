@@ -36,7 +36,7 @@
     "robot_commands": 0
   },
   "validation": {
-    "client_unit_tests_passed": 16,
+    "client_unit_tests_passed": 24,
     "server_regression_tests_passed": 18,
     "syntax_check": "passed",
     "locked_offline_sync": "passed",
@@ -79,5 +79,21 @@
     "desktop_entry": "/home/cv/桌面/Tempo-LoRA.desktop",
     "regression_log": "client/logs/gui_validation/tests.log",
     "integration_log": "client/logs/gui_validation/integration.json"
+  },
+  "continuous_cameras": {
+    "capture": "synthetic",
+    "can": "synthetic",
+    "model": "real_wired_step_10000",
+    "same_camera_pid_across_two_rounds_and_stop": 632372,
+    "idle_capture_continues": true,
+    "bounded_buffer_frames_per_camera": 9,
+    "release_and_reopen": true,
+    "gui_exit_closes_capture": true,
+    "camera_starts": 2,
+    "camera_closes": 2,
+    "robot_commands": 0,
+    "regression_log": "client/logs/continuous_cameras/tests.log",
+    "integration_log": "client/logs/continuous_cameras/integration.json",
+    "real_usb_validation": "pending_other_client_holds_devices"
   }
 }

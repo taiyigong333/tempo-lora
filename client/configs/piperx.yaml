@@ -31,6 +31,8 @@ live:
   max_pending_frames: 60
   max_batch_frames: 8
   camera_parameters: camera_parameters.json
+  camera_lock_timeout_s: 0.05 # 共享帧锁有界等待，秒
+  camera_stop_timeout_s: 2 # 退出/显式释放时回收相机进程的等待，秒
   cameras:
     head: {name: camera_front, serial: '263022073726', width: 640, height: 480, fps: 30}
     left_wrist: {name: camera_wrist_right, serial: '419122270341', width: 640, height: 480, fps: 30}
