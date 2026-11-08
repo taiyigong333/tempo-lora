@@ -30,11 +30,20 @@ def checkpoint_file(path):
     return latest
 
 
-def create_policy(checkpoint, *, pytorch_device=None, sample_kwargs=None):
+def create_policy(checkpoint, *, pytorch_device=None, sample_kwargs=None, compile_inference=False):
+    if type(compile_inference) is not bool:
+        raise ValueError("compile_inference必须为布尔值")
     saved = load_policy_checkpoint(checkpoint_file(checkpoint))
     cfg = saved["config"]
     configure_environment(cfg)
     model, _ = build_model(cfg, state=saved["trainable"])
+    if compile_inference:
+        # 仅编译重复调用的去噪子图，避开整段在线历史和RTC调度的动态控制流。
+        # 推理冻结参数仍允许RTC对输入潜变量计算VJP，减少无关参数的图记录。
+        model.requires_grad_(False)
+        model.denoise_step = torch.compile(model.denoise_step, dynamic=True, mode="default")
+        if model.predict_ut:
+            model._ut_decoder.forward = torch.compile(model._ut_decoder.forward, dynamic=False, mode="default")
     dc = make_train_config(cfg).data.create(artifact_root(cfg), model_config(cfg))
     norm = deserialize_json(saved["norm_stats"])
     def native_actions(result):
@@ -52,20 +61,27 @@ def create_policy(checkpoint, *, pytorch_device=None, sample_kwargs=None):
                             "execute_steps": cfg["inference"]["execute_steps"], "ema_enabled": False,
                             "modes": ["tempo", "temporal_ensemble", "rtc"],
                             "rtc_algorithm": "decoded_action_vjp_soft_prefix",
-                            "task_prompts": [cfg["data"]["prompt"]], "protocol_version": 2})
+                            "task_prompts": [cfg["data"]["prompt"]], "protocol_version": 2,
+                            "denoise_steps": (sample_kwargs or {}).get("num_steps", cfg["inference"]["denoise_steps"]),
+                            "compile_inference": bool(compile_inference)})
     policy.tempo_norm_stats = norm
     return policy
 
 
 class OnlinePolicy(BasePolicy):
-    def __init__(self, policy, cfg, *, sam_stream=None, rtc_max_guidance=10.0):
+    def __init__(self, policy, cfg, *, sam_stream=None, rtc_max_guidance=10.0,
+                 parallel_sam=False, compile_inference=False):
         self.policy, self.cfg = policy, cfg
+        if type(parallel_sam) is not bool:
+            raise ValueError("parallel_sam必须为布尔值")
+        self.parallel_sam = parallel_sam
         if not np.isfinite(rtc_max_guidance) or rtc_max_guidance <= 0:
             raise ValueError("RTC引导上限必须为有限正数")
         self.rtc_max_guidance = float(rtc_max_guidance)
         if sam_stream is None:
             from openpi.tempo_lora.sam import SAM2Stream, build_sam2_tiny
-            sam_stream = SAM2Stream(build_sam2_tiny("cuda"), precision=cfg["model"]["dtype"])
+            sam_stream = SAM2Stream(build_sam2_tiny("cuda"), precision=cfg["model"]["dtype"],
+                                    compile_model=compile_inference)
         self.sam = sam_stream
         mc, dc = cfg["model"], cfg["data"]
         self.history_width = round(dc["fps"] * dc["action_history_seconds"] / mc["action_history_steps"])
@@ -84,7 +100,7 @@ class OnlinePolicy(BasePolicy):
         self.sam.reset()
         self.latest_tokens = None
 
-    def ingest(self, observation):
+    def ingest(self, observation, *, encode_sam=True):
         timestamp = float(observation["timestamp"])
         if not np.isfinite(timestamp):
             raise ValueError("反馈时间戳必须有限")
@@ -104,11 +120,12 @@ class OnlinePolicy(BasePolicy):
             # state[t] 对应 action[t-1]，仅在该反馈实际到达后添加历史。
             self.feedback.append(state.copy())
         self.images.append({key: value.copy() for key, value in images.items()})
-        self.latest_tokens = self.sam.step(images["head"]).transpose(1, 2, 0).reshape(64, 256)
+        if encode_sam:
+            self.latest_tokens = self.sam.step(images["head"]).transpose(1, 2, 0).reshape(64, 256)
         self.last_state = state.copy()
         self.last_timestamp = timestamp
 
-    def inputs(self):
+    def inputs(self, *, sam2_tokens=None):
         mc = self.cfg["model"]
         actions = np.array(self.feedback, np.float32).reshape(-1, self.cfg["data"]["action_dim"])
         history, padding = history_buckets(actions, len(actions), mc["action_history_steps"], self.history_width)
@@ -117,7 +134,7 @@ class OnlinePolicy(BasePolicy):
                    for offset in range(mc["obs_history"] - 1, -1, -1)]
         return {"state": self.last_state, "images": {cam: np.stack([images[i][cam] for i in indices])
                 for cam in self.cfg["data"]["cameras"]}, "prompt": self.cfg["data"]["prompt"],
-                "sam2_tokens": self.latest_tokens, "action_history": history, "action_history_is_pad": padding}
+                "sam2_tokens": self.latest_tokens if sam2_tokens is None else sam2_tokens, "action_history": history, "action_history_is_pad": padding}
 
     def infer(self, obs, *, noise=None):
         if "episode_id" not in obs:
@@ -171,27 +188,46 @@ class OnlinePolicy(BasePolicy):
             self.reset()
             self.episode = obs["episode_id"]
         timer = time.monotonic()
-        for frame in frames:
-            self.ingest(frame)
-        result = self.policy.infer(self.inputs(), noise=noise, **({"sample_kwargs": sampling} if sampling else {}))
+        provider = None
+        if self.parallel_sam:
+            provider = self.sam.encode_async([frame["images"]["head"] for frame in frames])
+            sampling["sam2_tokens_provider"] = provider
+        try:
+            for frame in frames:
+                self.ingest(frame, encode_sam=not self.parallel_sam)
+            ingest_ms = (time.monotonic() - timer) * 1000
+            placeholder = np.zeros((64, 256), np.float32) if self.parallel_sam else None
+            result = self.policy.infer(self.inputs(sam2_tokens=placeholder), noise=noise,
+                                       **({"sample_kwargs": sampling} if sampling else {}))
+        finally:
+            # 出错同样排空当前批SAM2任务，下一episode重置时不会与旧任务竞争记忆。
+            if provider is not None:
+                tokens = provider()
+        if provider is not None:
+            self.latest_tokens = tokens[0].detach().cpu().numpy()
         result["end_to_end_ms"] = (time.monotonic() - timer) * 1000
+        result["feedback_ingest_ms"] = ingest_ms
         result["mode"] = mode
         result["rtc_prefix_length"] = 0 if prefix is None else len(prefix)
         return result
 
     @property
     def metadata(self):
-        return {**self.policy.metadata, "rtc_max_guidance": self.rtc_max_guidance}
+        return {**self.policy.metadata, "rtc_max_guidance": self.rtc_max_guidance,
+                "parallel_sam": self.parallel_sam}
 
 
 def serve(cfg, checkpoint=None, *, port=None, host=None):
     from openpi.serving.websocket_policy_server import WebsocketPolicyServer
     rtc_max_guidance = cfg["inference"].get("rtc_max_guidance", 10.0)
+    compile_inference = cfg["inference"].get("compile_inference", False)
+    parallel_sam = cfg["inference"].get("parallel_sam", False)
     path = checkpoint_file(checkpoint or cfg["paths"]["run"])
     saved = load_policy_checkpoint(path)
     cfg = saved["config"]
     configure_environment(cfg)
-    policy = OnlinePolicy(create_policy(path), cfg, rtc_max_guidance=rtc_max_guidance)
+    policy = OnlinePolicy(create_policy(path, compile_inference=compile_inference), cfg, rtc_max_guidance=rtc_max_guidance,
+                          parallel_sam=parallel_sam, compile_inference=compile_inference)
     # 先预热原生与RTC路径，再开放端口，首轮控制沿用正常帧龄保护。
     state = np.asarray(policy.policy.tempo_norm_stats["state"].mean, np.float32)[:cfg["data"]["action_dim"]]
     images = {camera: np.zeros((224, 224, 3), np.uint8) for camera in cfg["data"]["cameras"]}

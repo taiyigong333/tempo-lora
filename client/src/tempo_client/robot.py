@@ -77,12 +77,16 @@ class Robot:
                 time.sleep(.01)
 
     def _feedback(self, value, shape):
-        if value is None or value.hz <= 0 or not 0 <= time.time() - value.timestamp <= self.safety["feedback_max_age_s"]:
+        if value is None or value.hz <= 0:
             raise RuntimeError("机器人反馈缺失或过期")
-        result = np.asarray(value.msg, np.float64)
+        # SDK对象可由接收线程更新，先快照时间戳，再比较当前时刻，避免负帧龄误报。
+        stamp = float(value.timestamp)
+        result = np.asarray(value.msg, np.float64).copy()
+        if not 0 <= time.time() - stamp <= self.safety["feedback_max_age_s"]:
+            raise RuntimeError("机器人反馈缺失或过期")
         if result.shape != shape or not np.isfinite(result).all():
             raise RuntimeError("机器人反馈维度或数值异常")
-        return result.copy()
+        return result
 
     def read_joints(self):
         with self.lock:
@@ -96,10 +100,12 @@ class Robot:
         with self.lock:
             joints = self.read_joints()
             feedback = self.gripper.get_gripper_status()
-            if (feedback is None or feedback.hz <= 0 or feedback.msg.mode != "width"
-                    or not 0 <= time.time() - feedback.timestamp <= self.safety["feedback_max_age_s"]):
+            if feedback is None or feedback.hz <= 0 or feedback.msg.mode != "width":
                 raise RuntimeError("夹爪反馈缺失或过期")
+            stamp = float(feedback.timestamp)
             width = float(feedback.msg.value)
+            if not 0 <= time.time() - stamp <= self.safety["feedback_max_age_s"]:
+                raise RuntimeError("夹爪反馈缺失或过期")
             lo, hi = self.safety["gripper_range_m"]
             tolerance = self.safety["gripper_feedback_tolerance_m"]
             if not np.isfinite(width) or not lo - tolerance <= width <= hi + tolerance:
@@ -109,9 +115,12 @@ class Robot:
     def check_status(self):
         with self.lock:
             feedback = self.arm.get_arm_status()
-            if feedback is None or not 0 <= time.time() - feedback.timestamp <= self.safety["feedback_max_age_s"]:
+            if feedback is None:
                 raise RuntimeError("机械臂状态反馈过期")
+            stamp = float(feedback.timestamp)
             status = feedback.msg
+            if not 0 <= time.time() - stamp <= self.safety["feedback_max_age_s"]:
+                raise RuntimeError("机械臂状态反馈过期")
             if getattr(status.arm_status, "value", status.arm_status) != 0 or status.err_code:
                 raise RuntimeError("机械臂控制器报告故障")
             self.read_state()

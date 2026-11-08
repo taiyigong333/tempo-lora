@@ -344,7 +344,7 @@ class PI0Pytorch(nn.Module):
 
     def embed_prefix(
         self, images, img_masks, lang_tokens, lang_masks, sam2_tokens=None, action_history=None,
-        action_history_is_pad=None,
+        action_history_is_pad=None, sam2_tokens_provider=None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Embed images with SigLIP and language tokens with embedding layer to prepare
         for PaliGemma transformer processing.
@@ -354,7 +354,7 @@ class PI0Pytorch(nn.Module):
         att_masks = []
 
         # Process images
-        for cam_idx, (img, img_mask) in enumerate(zip(images, img_masks, strict=True)):
+        for img, img_mask in zip(images, img_masks, strict=True):
             # TEMPO-MOT video encoder: images may carry a temporal frame axis (B, K, C, H, W). Fold the
             # K frames into the batch dim; embed_image returns only the current frame's tokens.
             if img.ndim == 5:
@@ -377,10 +377,6 @@ class PI0Pytorch(nn.Module):
             else:
                 img_emb = self._apply_checkpoint(image_embed_func, img_in)
 
-            # SAM2 motion fusion into the head cam's current tokens (cam index 0 = base_0_rgb).
-            if self.use_sam2_fusion and sam2_tokens is not None and cam_idx == 0:
-                img_emb = self.sam2_fusion(img_emb, sam2_tokens)
-
             bsize, num_img_embs = img_emb.shape[:2]
 
             embs.append(img_emb)
@@ -388,6 +384,13 @@ class PI0Pytorch(nn.Module):
 
             # Create attention masks so that image tokens attend to each other
             att_masks += [0] * num_img_embs
+
+        # 两路视觉编码先排入当前CUDA流，SAM2可在独立流中同时处理完整视频反馈。
+        # 只在实际融合处等待当前批SAM2特征，避免读取上一批或未完成的特征。
+        if sam2_tokens_provider is not None:
+            sam2_tokens = sam2_tokens_provider()
+        if self.use_sam2_fusion and sam2_tokens is not None:
+            embs[0] = self.sam2_fusion(embs[0], sam2_tokens)
 
         # Process language tokens
         def lang_embed_func(lang_tokens):
@@ -651,7 +654,7 @@ class PI0Pytorch(nn.Module):
 
     @torch.no_grad()
     def sample_actions(self, device, observation, noise=None, num_steps=10,
-                       rtc_prefix=None, rtc_weights=None, rtc_max_guidance=10.0) -> Tensor:
+                       rtc_prefix=None, rtc_weights=None, rtc_max_guidance=10.0, sam2_tokens_provider=None) -> Tensor:
         """Do a full inference forward and compute the action (batch_size x num_steps x num_motors)"""
         bsize = observation.state.shape[0]
         if noise is None:
@@ -665,6 +668,7 @@ class PI0Pytorch(nn.Module):
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
             images, img_masks, lang_tokens, lang_masks, sam2_tokens=sam2_tokens,
             action_history=action_history, action_history_is_pad=action_history_is_pad,
+            sam2_tokens_provider=sam2_tokens_provider,
         )
         prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
         prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1

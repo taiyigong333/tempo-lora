@@ -1,6 +1,7 @@
 """离线和在线共享连续视频状态，逐帧上传避免整段 1024px 视频占用显存。"""
 
 from contextlib import nullcontext
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import sys
 import time
@@ -20,9 +21,15 @@ from tools.precompute_sam2_tokens import read_video_rgb
 
 
 class SAM2Stream:
-    def __init__(self, model, device="cuda", precision="bfloat16"):
+    def __init__(self, model, device="cuda", precision="bfloat16", *, compile_model=False):
         self.model, self.device, self.precision = model, device, precision
         self.model.requires_grad_(False)
+        self.executor = None
+        self.cuda_stream = None
+        if compile_model:
+            # 图像骨干与记忆编码形状固定，时序记忆选择继续逐帧按原逻辑执行。
+            self.model.forward_image = torch.compile(self.model.forward_image, dynamic=False, mode="default")
+            self.model._encode_new_memory = torch.compile(self.model._encode_new_memory, dynamic=False, mode="default")
         self.reset()
 
     def reset(self):
@@ -30,7 +37,7 @@ class SAM2Stream:
         self.outputs = {"cond_frame_outputs": {}, "non_cond_frame_outputs": {}}
 
     @torch.no_grad()
-    def step(self, rgb):
+    def step(self, rgb, *, return_tensor=False):
         import cv2
 
         x = torch.from_numpy(cv2.resize(rgb, (1024, 1024))).permute(2, 0, 1)[None]
@@ -45,7 +52,7 @@ class SAM2Stream:
                 frame_idx=self.frame, is_init_cond_frame=self.frame == 0,
                 current_vision_feats=vf[-1:], current_vision_pos_embeds=vp[-1:], feat_sizes=sizes[-1:],
                 output_dict=self.outputs, num_frames=self.frame + 1, track_in_reverse=False)
-            latent = F.adaptive_avg_pool2d(pix, (8, 8))[0].float().cpu().numpy()
+            latent = F.adaptive_avg_pool2d(pix, (8, 8))[0].float()
             memory, position = self.model._encode_new_memory(
                 current_vision_feats=vf, feat_sizes=sizes,
                 pred_masks_high_res=_full_frame_mask(self.model.image_size, self.device, dtype),
@@ -62,7 +69,32 @@ class SAM2Stream:
             if old < self.frame - keep:
                 del self.outputs["non_cond_frame_outputs"][old]
         self.frame += 1
-        return latent
+        return latent if return_tensor else latent.cpu().numpy()
+
+    def encode_async(self, images):
+        if self.executor is None:
+            self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tempo-sam2")
+            self.cuda_stream = torch.cuda.Stream(device=self.device)
+        # 权重初始化和上轮融合均先于本轮SAM2输入，双向依赖由CUDA事件串接。
+        self.cuda_stream.wait_stream(torch.cuda.current_stream(self.device))
+
+        def encode():
+            with torch.cuda.stream(self.cuda_stream):
+                for rgb in images:
+                    latent = self.step(rgb, return_tensor=True)
+                tokens = latent.permute(1, 2, 0).reshape(1, 64, 256)
+                ready = torch.cuda.Event()
+                ready.record(self.cuda_stream)
+            return tokens, ready
+
+        future = self.executor.submit(encode)
+
+        def resolve():
+            tokens, ready = future.result()
+            torch.cuda.current_stream(self.device).wait_event(ready)
+            return tokens
+
+        return resolve
 
 
 def prepare_sam(cfg, *, limit=None):

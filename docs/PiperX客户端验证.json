@@ -44,8 +44,8 @@
     "sdk_and_camera_dependency_import": "passed_without_opening_hardware"
   },
   "pending": [
-    "持续吞吐改善及再验证，保持10次去噪和既有0.5秒动作时效",
-    "现场每轮确认后的机器人运动、保持使能效果与抓取成功率"
+    "RTC在10次去噪和0.5秒时效保护下的持续延迟优化",
+    "现场逐轮确认后的新执行路径运动效果和抓取成功率"
   ],
   "assumptions": [],
   "artifacts": {
@@ -293,7 +293,8 @@
       "TE/RTC真实连续异步运行触发缓冲耗尽或观测过期保护",
       "一次只读预测夹爪目标越界，实机路径会拒绝",
       "真实归位、实机运动及抓取成功率未验证"
-    ]
+    ],
+    "superseded_by": "inference_latency_fix"
   },
   "soft_limits_and_enabled_hold": {
     "date": "2026-11-09",
@@ -447,5 +448,391 @@
       ]
     },
     "physical_motion_hold_test": "pending_onsite_confirmation"
+  },
+  "last_updated": "2026-11-09",
+  "inference_latency_fix": {
+    "date": "2026-11-09",
+    "base_commit": "b8028c788963db0cb540fac5756f5ec7ce94b13e",
+    "deployment": {
+      "port": 8000,
+      "compile_inference": true,
+      "parallel_sam": true,
+      "denoise_steps": 10,
+      "checkpoint_step": 10000,
+      "gui_pid": 650145,
+      "camera_pid": 650375,
+      "selected_mode": "temporal_ensemble",
+      "execute": false
+    },
+    "causes": [
+      "continuous feedback accumulating behind serial SAM2 and policy execution",
+      "mutable SDK feedback timestamp/cache race outside robot lock"
+    ],
+    "client_tests_passed": 63,
+    "server_tests_passed": 37,
+    "sam_feature_equivalence": {
+      "same_frame_sequence": true,
+      "max_abs_error": 0.0,
+      "frame_count": 8
+    },
+    "fixed_input_numeric_comparison": {
+      "cases": 8,
+      "denoise_steps": 10,
+      "same_checkpoint_and_inputs": true,
+      "eager_repeat_max_abs_error": 0.0,
+      "joint_max_abs_error_rad": [
+        0.0038302093744277954,
+        0.024297237396240234,
+        0.007542908191680908,
+        0.012742996215820312,
+        0.003096960484981537,
+        0.008741393685340881
+      ],
+      "gripper_max_abs_error_m": 0.0015917643904685974,
+      "rms_error_per_dim": [
+        0.002270427765324712,
+        0.007981415838003159,
+        0.0032221036963164806,
+        0.004271401092410088,
+        0.0011484490241855383,
+        0.0032295514829456806,
+        0.0006823981530033052
+      ],
+      "all_finite": true,
+      "parameter_gradients": 0
+    },
+    "synthetic_continuous_modes": [
+      {
+        "mode": "live",
+        "batches": 118,
+        "feedback_frames": 902,
+        "robot_commands": 0,
+        "outcome": "completed",
+        "log_dir": "/home/cv/gcj/project/baseline_fast/tempo-lora/client/logs/latency_fix/parallel/sessions/20261109_012737_085214",
+        "task_id": "rotating_red_square",
+        "prompt": "grab the rotating red square",
+        "inference_mode": "tempo",
+        "execute": false,
+        "home_before": true,
+        "camera_stream": {
+          "reused": false,
+          "process_id": 648114,
+          "buffer_frames_per_camera": 9
+        },
+        "planned_targets": 117,
+        "safety_violations": 0,
+        "rtc_guided_requests": 0,
+        "robot_diagnostics": {
+          "hardware": "synthetic"
+        }
+      },
+      {
+        "mode": "live",
+        "batches": 157,
+        "feedback_frames": 895,
+        "robot_commands": 0,
+        "outcome": "completed",
+        "log_dir": "/home/cv/gcj/project/baseline_fast/tempo-lora/client/logs/latency_fix/parallel/sessions/20261109_012807_674406",
+        "task_id": "rotating_red_square",
+        "prompt": "grab the rotating red square",
+        "inference_mode": "temporal_ensemble",
+        "execute": false,
+        "home_before": true,
+        "camera_stream": {
+          "reused": true,
+          "process_id": 648114,
+          "buffer_frames_per_camera": 9
+        },
+        "planned_targets": 901,
+        "safety_violations": 0,
+        "rtc_guided_requests": 0,
+        "robot_diagnostics": {
+          "hardware": "synthetic"
+        }
+      },
+      {
+        "mode": "live",
+        "batches": 2,
+        "feedback_frames": 5,
+        "robot_commands": 0,
+        "outcome": "error",
+        "log_dir": "/home/cv/gcj/project/baseline_fast/tempo-lora/client/logs/latency_fix/parallel/sessions/20261109_012837_898159",
+        "task_id": "rotating_red_square",
+        "prompt": "grab the rotating red square",
+        "inference_mode": "rtc",
+        "execute": false,
+        "home_before": true,
+        "camera_stream": {
+          "reused": true,
+          "process_id": 648114,
+          "buffer_frames_per_camera": 9
+        },
+        "planned_targets": 15,
+        "safety_violations": 0,
+        "rtc_guided_requests": 1,
+        "error": "异步动作缓冲耗尽或观测过期",
+        "robot_diagnostics": {
+          "hardware": "synthetic"
+        }
+      }
+    ],
+    "real_candidate": {
+      "hardware": "real dual RealSense and PiperX CAN, read only",
+      "automatic_motion_confirmation": false,
+      "sessions": [
+        {
+          "mode": "probe",
+          "batches": 0,
+          "feedback_frames": 0,
+          "robot_commands": 0,
+          "outcome": "completed",
+          "log_dir": "/home/cv/gcj/project/baseline_fast/tempo-lora/client/logs/gui/20261109_013506_524896"
+        },
+        {
+          "mode": "camera",
+          "batches": 0,
+          "feedback_frames": 0,
+          "robot_commands": 0,
+          "outcome": "completed",
+          "log_dir": "/home/cv/gcj/project/baseline_fast/tempo-lora/client/logs/gui/20261109_013506_667741",
+          "camera_stream": {
+            "reused": false,
+            "process_id": 650375,
+            "buffer_frames_per_camera": 9
+          }
+        },
+        {
+          "mode": "live",
+          "batches": 79,
+          "feedback_frames": 604,
+          "robot_commands": 0,
+          "outcome": "completed",
+          "log_dir": "/home/cv/gcj/project/baseline_fast/tempo-lora/client/logs/gui/20261109_013507_733151",
+          "task_id": "rotating_red_square",
+          "prompt": "grab the rotating red square",
+          "inference_mode": "tempo",
+          "execute": false,
+          "home_before": true,
+          "camera_stream": {
+            "reused": true,
+            "process_id": 650375,
+            "buffer_frames_per_camera": 9
+          },
+          "planned_targets": 78,
+          "safety_violations": 0,
+          "rtc_guided_requests": 0,
+          "robot_diagnostics": {
+            "sdk": "/home/cv/gcj/project/baseline_fast/dynamic_vla/pyAgxArm/pyAgxArm/__init__.py",
+            "firmware": {
+              "hardware_version": "H-V1.2-1",
+              "motor_ratio_and_batch": "10",
+              "node_type": "Piper_",
+              "software_version": "S-V1.9-0",
+              "production_date": "260731",
+              "node_number": "15"
+            }
+          }
+        },
+        {
+          "mode": "live",
+          "batches": 313,
+          "feedback_frames": 1797,
+          "robot_commands": 0,
+          "outcome": "completed",
+          "log_dir": "/home/cv/gcj/project/baseline_fast/tempo-lora/client/logs/gui/20261109_013528_550900",
+          "task_id": "rotating_red_square",
+          "prompt": "grab the rotating red square",
+          "inference_mode": "temporal_ensemble",
+          "execute": false,
+          "home_before": true,
+          "camera_stream": {
+            "reused": true,
+            "process_id": 650375,
+            "buffer_frames_per_camera": 9
+          },
+          "planned_targets": 1801,
+          "safety_violations": 0,
+          "rtc_guided_requests": 0,
+          "robot_diagnostics": {
+            "sdk": "/home/cv/gcj/project/baseline_fast/dynamic_vla/pyAgxArm/pyAgxArm/__init__.py",
+            "firmware": {
+              "hardware_version": "H-V1.2-1",
+              "motor_ratio_and_batch": "10",
+              "node_type": "Piper_",
+              "software_version": "S-V1.9-0",
+              "production_date": "260731",
+              "node_number": "15"
+            }
+          }
+        },
+        {
+          "mode": "live",
+          "batches": 9,
+          "feedback_frames": 42,
+          "robot_commands": 0,
+          "outcome": "cancelled",
+          "log_dir": "/home/cv/gcj/project/baseline_fast/tempo-lora/client/logs/gui/20261109_013629_185316",
+          "task_id": "rotating_red_square",
+          "prompt": "grab the rotating red square",
+          "inference_mode": "temporal_ensemble",
+          "execute": false,
+          "home_before": true,
+          "camera_stream": {
+            "reused": true,
+            "process_id": 650375,
+            "buffer_frames_per_camera": 9
+          },
+          "planned_targets": 49,
+          "safety_violations": 3,
+          "rtc_guided_requests": 0,
+          "robot_diagnostics": {
+            "sdk": "/home/cv/gcj/project/baseline_fast/dynamic_vla/pyAgxArm/pyAgxArm/__init__.py",
+            "firmware": {
+              "hardware_version": "H-V1.2-1",
+              "motor_ratio_and_batch": "10",
+              "node_type": "Piper_",
+              "software_version": "S-V1.9-0",
+              "production_date": "260731",
+              "node_number": "15"
+            }
+          }
+        },
+        {
+          "mode": "live",
+          "batches": 2,
+          "feedback_frames": 6,
+          "robot_commands": 0,
+          "outcome": "error",
+          "log_dir": "/home/cv/gcj/project/baseline_fast/tempo-lora/client/logs/gui/20261109_013631_446037",
+          "task_id": "rotating_red_square",
+          "prompt": "grab the rotating red square",
+          "inference_mode": "rtc",
+          "execute": false,
+          "home_before": true,
+          "camera_stream": {
+            "reused": true,
+            "process_id": 650375,
+            "buffer_frames_per_camera": 9
+          },
+          "planned_targets": 15,
+          "safety_violations": 0,
+          "rtc_guided_requests": 1,
+          "error": "异步动作缓冲耗尽或观测过期",
+          "robot_diagnostics": {
+            "sdk": "/home/cv/gcj/project/baseline_fast/dynamic_vla/pyAgxArm/pyAgxArm/__init__.py",
+            "firmware": {
+              "hardware_version": "H-V1.2-1",
+              "motor_ratio_and_batch": "10",
+              "node_type": "Piper_",
+              "software_version": "S-V1.9-0",
+              "production_date": "260731",
+              "node_number": "15"
+            }
+          }
+        }
+      ]
+    },
+    "real_official": {
+      "hardware": "real dual RealSense and PiperX CAN, read only",
+      "automatic_motion_confirmation": false,
+      "sessions": [
+        {
+          "mode": "probe",
+          "batches": 0,
+          "feedback_frames": 0,
+          "robot_commands": 0,
+          "outcome": "completed",
+          "log_dir": "/home/cv/gcj/project/baseline_fast/tempo-lora/client/logs/gui/20261109_014130_447956"
+        },
+        {
+          "mode": "camera",
+          "batches": 0,
+          "feedback_frames": 0,
+          "robot_commands": 0,
+          "outcome": "completed",
+          "log_dir": "/home/cv/gcj/project/baseline_fast/tempo-lora/client/logs/gui/20261109_014130_577666",
+          "camera_stream": {
+            "reused": true,
+            "process_id": 650375,
+            "buffer_frames_per_camera": 9
+          }
+        },
+        {
+          "mode": "live",
+          "batches": 158,
+          "feedback_frames": 895,
+          "robot_commands": 0,
+          "outcome": "completed",
+          "log_dir": "/home/cv/gcj/project/baseline_fast/tempo-lora/client/logs/gui/20261109_014130_711156",
+          "task_id": "rotating_red_square",
+          "prompt": "grab the rotating red square",
+          "inference_mode": "temporal_ensemble",
+          "execute": false,
+          "home_before": true,
+          "camera_stream": {
+            "reused": true,
+            "process_id": 650375,
+            "buffer_frames_per_camera": 9
+          },
+          "planned_targets": 901,
+          "safety_violations": 0,
+          "rtc_guided_requests": 0,
+          "robot_diagnostics": {
+            "sdk": "/home/cv/gcj/project/baseline_fast/dynamic_vla/pyAgxArm/pyAgxArm/__init__.py",
+            "firmware": {
+              "hardware_version": "H-V1.2-1",
+              "motor_ratio_and_batch": "10",
+              "node_type": "Piper_",
+              "software_version": "S-V1.9-0",
+              "production_date": "260731",
+              "node_number": "15"
+            }
+          }
+        },
+        {
+          "mode": "live",
+          "batches": 9,
+          "feedback_frames": 41,
+          "robot_commands": 0,
+          "outcome": "cancelled",
+          "log_dir": "/home/cv/gcj/project/baseline_fast/tempo-lora/client/logs/gui/20261109_014201_387599",
+          "task_id": "rotating_red_square",
+          "prompt": "grab the rotating red square",
+          "inference_mode": "temporal_ensemble",
+          "execute": false,
+          "home_before": true,
+          "camera_stream": {
+            "reused": true,
+            "process_id": 650375,
+            "buffer_frames_per_camera": 9
+          },
+          "planned_targets": 49,
+          "safety_violations": 3,
+          "rtc_guided_requests": 0,
+          "robot_diagnostics": {
+            "sdk": "/home/cv/gcj/project/baseline_fast/dynamic_vla/pyAgxArm/pyAgxArm/__init__.py",
+            "firmware": {
+              "hardware_version": "H-V1.2-1",
+              "motor_ratio_and_batch": "10",
+              "node_type": "Piper_",
+              "software_version": "S-V1.9-0",
+              "production_date": "260731",
+              "node_number": "15"
+            }
+          }
+        }
+      ]
+    },
+    "official_te_latency_ms": {
+      "median": 192.28656159248203,
+      "p95": 199.03750545345247,
+      "maximum": 212.51097694039345
+    },
+    "known_limits": [
+      "RTC10次去噪仍触发时效保护",
+      "只读取消测试出现夹爪目标越界，实机路径会拒绝",
+      "编译后存在已记录的浮点数值差异",
+      "本次自动现场验证为只读，新执行路径实机运动效果需现场确认"
+    ]
   }
 }

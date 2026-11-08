@@ -99,3 +99,59 @@ def test_invalid_request_does_not_mutate_episode(change):
     with pytest.raises(ValueError):
         policy.infer({**observation(), **change})
     assert policy.frame == -1 and policy.sam.count == 0
+
+
+def test_parallel_sam_resolves_current_batch_and_drains_on_policy_error():
+    policy = online()
+    policy.parallel_sam = True
+    resolved = []
+    images = []
+    def encode_async(batch):
+        images.extend(batch)
+        def resolve():
+            resolved.append(True)
+            return torch.full((1, 64, 256), .75)
+        return resolve
+    policy.sam.encode_async = encode_async
+    result = policy.infer(observation())
+    assert len(images) == 1 and len(resolved) == 1
+    np.testing.assert_array_equal(policy.latest_tokens, .75)
+    assert "sam2_tokens_provider" in policy.policy.kwargs["sample_kwargs"]
+    assert result["feedback_ingest_ms"] >= 0
+    def fail(*args, **kwargs):
+        raise RuntimeError("合成策略错误")
+    policy.policy.infer = fail
+    with pytest.raises(RuntimeError, match="策略错误"):
+        policy.infer({**observation(), "timestamp": 1 / 30})
+    assert len(resolved) == 2
+
+
+def test_visual_encoding_finishes_before_sam_wait_and_fusion():
+    from types import SimpleNamespace
+    from openpi.models_pytorch.pi0_pytorch import PI0Pytorch
+    model = PI0Pytorch.__new__(PI0Pytorch)
+    torch.nn.Module.__init__(model)
+    model.config = SimpleNamespace(lora_enabled=False, compact_prefix=False)
+    model.use_sam2_fusion, model.use_action_history = True, False
+    events = []
+    def image(value, num_frames):
+        events.append("vision")
+        return torch.ones(1, 2, 4) * len(events)
+    def language(value):
+        events.append("language")
+        return torch.zeros(1, 3, 4)
+    model.paligemma_with_expert = SimpleNamespace(embed_image=image, embed_language_tokens=language)
+    model._apply_checkpoint = lambda fn, *args: fn(*args)
+    def resolve():
+        events.append("sam_wait")
+        return torch.full((1, 64, 256), 2.)
+    def fusion(head, sam):
+        events.append("fusion")
+        return head + sam[0, 0, 0]
+    model.sam2_fusion = fusion
+    embs, _, _ = model.embed_prefix([torch.zeros(1, 3, 4, 4)] * 2, [torch.ones(1, dtype=torch.bool)] * 2,
+                                     torch.zeros(1, 3, dtype=torch.long), torch.ones(1, 3, dtype=torch.bool),
+                                     sam2_tokens_provider=resolve)
+    assert events == ["vision", "vision", "sam_wait", "fusion", "language"]
+    torch.testing.assert_close(embs[:, :2], torch.full((1, 2, 4), 3.))
+    torch.testing.assert_close(embs[:, 2:4], torch.full((1, 2, 4), 2.))

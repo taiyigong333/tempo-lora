@@ -75,22 +75,23 @@ class LiveFeedback:
     def _sample_arm(self):
         while not self.stop.is_set():
             with self.robot.lock if self.robot is not None else contextlib.nullcontext():
+                # getter返回可变缓存，锁内保存时间戳与数值，并在时间戳之后读取当前时刻。
                 values = (self.arm.get_joint_angles(), self.effector.get_gripper_status())
-            now = time.time()
-            with self.lock:
-                for index, (history, feedback) in enumerate(zip((self.joints, self.gripper), values)):
-                    if feedback is None or feedback.hz <= 0:
-                        continue
-                    stamp = float(feedback.timestamp)
-                    if not 0 <= now - stamp <= self.cfg["max_feedback_age_s"]:
-                        raise RuntimeError("CAN反馈陈旧或时钟异常")
-                    if index == 1 and feedback.msg.mode != "width":
-                        raise RuntimeError("夹爪反馈应为米制开口")
-                    value = np.asarray(feedback.msg if index == 0 else [feedback.msg.value], np.float32)
-                    if value.shape != ((6,) if index == 0 else (1,)) or not np.isfinite(value).all():
-                        raise RuntimeError("CAN反馈维度或数值错误")
-                    if not history or stamp > history[-1][0]:
-                        history.append((stamp, value.copy()))
+                with self.lock:
+                    for index, (history, feedback) in enumerate(zip((self.joints, self.gripper), values)):
+                        if feedback is None or feedback.hz <= 0:
+                            continue
+                        stamp = float(feedback.timestamp)
+                        age = time.time() - stamp
+                        if not 0 <= age <= self.cfg["max_feedback_age_s"]:
+                            raise RuntimeError(f"CAN反馈陈旧或时钟异常，通道{index}，帧龄{age:.6f}秒")
+                        if index == 1 and feedback.msg.mode != "width":
+                            raise RuntimeError("夹爪反馈应为米制开口")
+                        value = np.asarray(feedback.msg if index == 0 else [feedback.msg.value], np.float32)
+                        if value.shape != ((6,) if index == 0 else (1,)) or not np.isfinite(value).all():
+                            raise RuntimeError("CAN反馈维度或数值错误")
+                        if not history or stamp > history[-1][0]:
+                            history.append((stamp, value.copy()))
             self.stop.wait(1 / self.cfg["sample_hz"])
 
     def _frame(self, stamp):

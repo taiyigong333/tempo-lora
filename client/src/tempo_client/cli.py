@@ -45,7 +45,9 @@ def replay_frames(path):
 def report(result, frames):
     return {"feedback_frames": len(frames), "timestamp": frames[-1]["timestamp"],
             "actions": result["actions"].tolist(), "round_trip_ms": result["round_trip_ms"],
-            "end_to_end_ms": result.get("end_to_end_ms"), "robot_commands": 0}
+            "end_to_end_ms": result.get("end_to_end_ms"),
+            "feedback_ingest_ms": result.get("feedback_ingest_ms"),
+            "policy_timing": result.get("policy_timing"), "robot_commands": 0}
 
 
 def main():
