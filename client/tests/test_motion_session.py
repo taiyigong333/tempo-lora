@@ -145,6 +145,9 @@ class MotionSessionTests(unittest.TestCase):
                                     self.assertGreater(summary["robot_commands"], 0)
                                     self.assertIn(("speed", 10), operations)
                                     self.assertIn(("speed", 90), operations)
+                                    self.assertTrue(SimulatedRobot.instances[-1].simulated_arm.enabled)
+                                    self.assertNotIn(("emergency_stop", True), operations)
+                                    self.assertEqual(summary["robot_diagnostics"]["hold_joint_enabled"], [True] * 6)
                                 else:
                                     self.assertEqual(summary["robot_commands"], 0)
                                     self.assertFalse(any(name == "enable" for name, _ in operations))

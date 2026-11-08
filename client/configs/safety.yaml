@@ -1,13 +1,13 @@
-# 沿用OpenPI现场配置的硬件保护与低速关节归位约定。
+# 在OpenPI现场配置基础上小幅放宽软件范围，Z下界和硬件关节/夹爪范围继续约束。
 safety:
   speed_percent: 90
   feedback_max_age_s: 0.1
   gripper_feedback_tolerance_m: 0.001
   gripper_range_m: [0, 0.10]
   gripper_force_n: 1.0
-  workspace_m: [[-0.02, 1], [-1, 1], [0, 1]]
-  max_position_step_m: 0.3
-  max_rotation_step_rad: 0.5
+  workspace_m: [[-0.07, 1.05], [-1.05, 1.05], [0, 1.05]]
+  max_position_step_m: 0.35
+  max_rotation_step_rad: 0.65
   action_max_age_s: 0.5
   watchdog_s: 0.5
   max_control_lag_s: 0.10
@@ -23,7 +23,7 @@ home:
   initial_joint_tolerance_rad: 0.035
   joint_tolerance_rad: 0.035
   max_joint_delta_rad: 1.7
-  start_workspace_m: [[-0.02, 1], [-1, 1], [0, 1]]
+  start_workspace_m: [[-0.07, 1.05], [-1.05, 1.05], [0, 1.05]]
   max_distance_m: 1
   max_rotation_rad: 2
   timeout_s: 30

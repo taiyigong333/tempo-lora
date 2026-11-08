@@ -270,6 +270,7 @@ class SessionWorker:
                     (directory / "error.log").write_text(traceback.format_exc())
         finally:
             if self.robot is not None:
+                robot = self.robot
                 try:
                     self.robot.close()
                 except Exception as error:
@@ -282,6 +283,7 @@ class SessionWorker:
                     summary["robot_commands"] = closed_robot.sent_commands
                 if self.robot is not None:
                     summary["robot_commands"] = self.robot.sent_commands
+                summary["robot_diagnostics"] = robot.diagnostics
             if self.client is not None:
                 try:
                     self.client.close()

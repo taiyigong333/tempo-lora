@@ -134,3 +134,12 @@ git push origin main
 一次只读预测出现夹爪目标超出0至0.10m范围，已作为保护提示记录。实机执行路径会拒绝该目标。全部真实联调运动指令为0，实机归位、执行、停止保持的流程使用合成SDK验证，真实抓取尚待现场确认后评测。
 
 最终回归为客户端53项、服务端28项通过。现场报告在client/logs/mode_deployment/desktop_verification.json，合成执行报告在同目录gui_integration.json，服务端报告在trained_model/runtime/mode_deployment/。真实桌面的Xwayland截图接口不可用，独立Tk截图已检查，现场控件与实时预览通过Tk控件接口核验。
+
+
+## 软件限位与停止保持的当前设置
+
+2026-11-09经用户确认，软件TCP范围更新为X [-0.07, 1.05]、Y [-1.05, 1.05]、Z [0, 1.05]米，归位起点使用同一范围。单目标相对当前TCP位移上限0.35米、转角上限0.65弧度，配置仍为client/configs/safety.yaml。
+
+Esc/停止按钮、目标越界、延迟超限和任务结束均使用位置保持，软件不发送失能命令。停止日志中的robot_diagnostics.stop_mode为position_hold_keep_enabled，hold_joint_enabled记录发送保持目标后读取的六关节使能反馈。CAN反馈失效保留阻尼故障急停，物理急停和控制器故障保护继续生效。
+
+当前客户端59项回归通过，真实只读F5/Esc、配置加载和持续双相机通过，实机运动保持效果使用合成SDK验证。原生模式也观察到0.505秒帧龄超限，记录在client/logs/hold_limits/desktop_verification.json。完整变更和限制见推理控制补全.md末节。

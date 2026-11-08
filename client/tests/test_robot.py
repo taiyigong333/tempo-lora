@@ -20,6 +20,7 @@ class RobotTests(unittest.TestCase):
         self.robot = Robot(self.cfg)
         self.robot.arm = Mock()
         self.robot.gripper = Mock()
+        self.robot.arm.get_joints_enable_status_list.return_value = [True] * 6
         self.target = np.asarray([0., .5, -.5, 0., 0., 0., .05])
         self.robot.target_pose = Mock(return_value=np.asarray([.2, 0., .3, 0., 0., 0.]))
         self.robot.read_pose = Mock(return_value=np.asarray([.2, 0., .3, 0., 0., 0.]))
@@ -66,6 +67,70 @@ class RobotTests(unittest.TestCase):
         self.robot.arm.move_j.assert_called_once()
         self.robot.gripper.move_gripper_m.assert_called_once()
         self.assertTrue(self.robot.holding)
+        self.assertTrue(self.robot.enabled)
+        self.assertEqual(self.robot.diagnostics["hold_joint_enabled"], [True] * 6)
+        self.robot.arm.disable.assert_not_called()
+        self.robot.arm.electronic_emergency_stop.assert_not_called()
+
+    def test_failed_hold_send_can_retry_without_losing_enable(self):
+        self.robot.enabled, self.robot.holding = True, False
+        self.robot.arm.move_j.side_effect = [OSError("合成发送失败"), None]
+        with self.assertRaises(OSError):
+            self.robot.hold()
+        self.assertIsNone(self.robot.hold_target)
+        self.assertFalse(self.robot.hold_complete)
+        self.robot.hold()
+        self.assertEqual(self.robot.arm.move_j.call_count, 2)
+        self.assertTrue(self.robot.hold_complete)
+        self.assertTrue(self.robot.enabled)
+        self.robot.arm.disable.assert_not_called()
+        self.robot.arm.electronic_emergency_stop.assert_not_called()
+
+    def test_failed_gripper_hold_is_retried(self):
+        self.robot.enabled, self.robot.holding = True, False
+        self.robot.gripper.move_gripper_m.side_effect = [OSError("夹爪发送失败"), None]
+        with self.assertRaises(OSError):
+            self.robot.hold()
+        self.assertFalse(self.robot.hold_complete)
+        self.robot.hold()
+        self.assertEqual(self.robot.gripper.move_gripper_m.call_count, 2)
+        self.assertTrue(self.robot.hold_complete)
+
+    def test_close_holds_before_disconnect_without_disable(self):
+        self.robot.enabled, self.robot.holding = True, False
+        arm = self.robot.arm
+        self.robot.close()
+        arm.move_j.assert_called_once_with(self.target[:6].tolist())
+        arm.disconnect.assert_called_once()
+        arm.disable.assert_not_called()
+        arm.electronic_emergency_stop.assert_not_called()
+        self.assertEqual(self.robot.diagnostics["hold_joint_enabled"], [True] * 6)
+
+    def test_feedback_failure_retains_fault_stop(self):
+        self.robot.enabled, self.robot.holding = True, False
+        self.robot.read_joints.side_effect = RuntimeError("CAN反馈失效")
+        with self.assertRaisesRegex(RuntimeError, "反馈失效"):
+            self.robot.hold()
+        self.robot.arm.move_j.assert_not_called()
+        self.robot.arm.electronic_emergency_stop.assert_called_once()
+        self.robot.arm.disable.assert_not_called()
+
+    def test_hold_does_not_reenable_after_controller_disables(self):
+        self.robot.enabled, self.robot.holding = True, False
+        self.robot.arm.get_joints_enable_status_list.return_value = [False] * 6
+        with self.assertRaisesRegex(RuntimeError, "未确认六关节使能"):
+            self.robot.hold()
+        self.assertFalse(self.robot.hold_complete)
+        self.robot.arm.enable.assert_not_called()
+        self.robot.arm.disable.assert_not_called()
+
+    def test_relaxed_soft_limits_allow_nearby_target(self):
+        self.robot.target_pose.return_value = np.asarray([-.04, 0., .3, 0., 0., .6])
+        self.robot.read_pose.return_value = np.asarray([.28, 0., .3, 0., 0., 0.])
+        self.robot.check_target(self.target)
+        self.robot.target_pose.return_value[2] = -.01
+        with self.assertRaisesRegex(ValueError, "工作空间"):
+            self.robot.check_target(self.target)
 
     def test_old_mode_feedback_does_not_allow_target(self):
         arm = self.robot.arm

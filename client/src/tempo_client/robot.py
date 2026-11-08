@@ -19,6 +19,7 @@ class Robot:
         self.enabled = False
         self.holding = True
         self.hold_target = None
+        self.hold_complete = False
         self.policy_started = False
         self.heartbeat = time.monotonic()
         self.sent_commands = 0
@@ -177,6 +178,7 @@ class Robot:
                         and len(enabled) == 6 and all(enabled)):
                     self.holding = False
                     self.hold_target = None
+                    self.hold_complete = False
                     self.policy_started = False
                     self.heartbeat = time.monotonic()
                     return
@@ -230,17 +232,23 @@ class Robot:
 
     def hold(self):
         with self.lock:
-            was_holding = self.holding
             self.holding = True
-            if self.arm is None or not self.enabled or (was_holding and self.hold_target is not None):
+            if self.arm is None or not self.enabled or self.hold_complete:
                 return
             try:
-                self.hold_target = self.read_joints()
+                target = self.read_joints() if self.hold_target is None else self.hold_target
             except RuntimeError:
                 self.arm.electronic_emergency_stop()
                 raise RuntimeError("反馈失效，已请求阻尼急停")
-            self.arm.move_j(self.hold_target.tolist())
+            # 发送成功后才锁定保持目标，SDK发送异常时允许后续停止请求重试。
+            self.arm.move_j(target.tolist())
+            self.hold_target = target.copy()
             self.sent_commands += 1
+            self.diagnostics["stop_mode"] = "position_hold_keep_enabled"
+            enabled = [bool(value) for value in self.arm.get_joints_enable_status_list()]
+            self.diagnostics["hold_joint_enabled"] = enabled
+            if len(enabled) != 6 or not all(enabled):
+                raise RuntimeError("保持目标已发送，但控制器未确认六关节使能，请检查现场状态")
             try:
                 width = float(self.read_state()[6])
             except RuntimeError as error:
@@ -250,12 +258,14 @@ class Robot:
             if lo <= width <= hi:
                 self.gripper.move_gripper_m(value=width, force=self.safety["gripper_force_n"])
                 self.sent_commands += 1
+            self.hold_complete = True
 
     def close(self):
         if self.arm is not None:
             try:
                 self.hold()
             finally:
+                # SDK断开只回收CAN线程与资源，不发送disable，不改变固件使能状态。
                 self.arm.disconnect()
                 self.arm = None
                 self.enabled = False
