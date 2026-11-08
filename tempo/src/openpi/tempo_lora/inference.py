@@ -149,15 +149,18 @@ class OnlinePolicy(BasePolicy):
         return self.policy.metadata
 
 
-def serve(cfg, checkpoint=None, *, port=None):
+def serve(cfg, checkpoint=None, *, port=None, host=None):
     from openpi.serving.websocket_policy_server import WebsocketPolicyServer
     path = checkpoint_file(checkpoint or cfg["paths"]["run"])
     saved = load_policy_checkpoint(path)
     cfg = saved["config"]
     configure_environment(cfg)
     policy = OnlinePolicy(create_policy(path), cfg)
-    WebsocketPolicyServer(policy, host=cfg["inference"]["host"], port=port or cfg["inference"]["port"],
-                          metadata=policy.metadata).serve_forever()
+    # 服务地址是部署参数，独立于检查点内不可变的训练配置。
+    metadata = {**policy.metadata, "checkpoint": path.name, "step": saved["step"]}
+    WebsocketPolicyServer(policy, host=host if host is not None else cfg["inference"]["host"],
+                          port=port if port is not None else cfg["inference"]["port"],
+                          metadata=metadata).serve_forever()
 
 
 @torch.no_grad()

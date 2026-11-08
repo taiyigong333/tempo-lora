@@ -1,0 +1,31 @@
+# 两端使用已有网线直连地址，连接时校验本机出口。
+connection:
+  host: 192.168.50.2
+  local_ip: 192.168.50.1
+  port: 8000
+  connect_timeout_s: 10
+  inference_timeout_s: 120
+model:
+  config: pi05_piperx_tempo_ut_lora
+  step: 10000
+  fps: 30
+  action_horizon: 16
+  action_dim: 7
+  action_space: absolute_joint_rad_gripper_m
+live:
+  sdk_path: /home/cv/gcj/project/baseline_fast/dynamic_vla/pyAgxArm
+  firmware_version: v189
+  can_name: can0
+  # 固定时间网格上的实测反馈插值，拒绝缺口和陈旧数据。
+  sample_hz: 90
+  max_feedback_age_s: 0.1
+  max_camera_age_s: 0.13
+  max_pair_skew_s: 0.10
+  interpolation_wait_s: 0.1
+  startup_timeout_s: 15
+  max_pending_frames: 60
+  max_batch_frames: 8
+  camera_parameters: camera_parameters.json
+  cameras:
+    head: {name: camera_front, serial: '263022073726', width: 640, height: 480, fps: 30}
+    left_wrist: {name: camera_wrist_right, serial: '419122270341', width: 640, height: 480, fps: 30}

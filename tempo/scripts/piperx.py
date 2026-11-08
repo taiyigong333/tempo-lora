@@ -21,6 +21,7 @@ def main():
     parser.add_argument("--steps", type=int)
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--port", type=int)
+    parser.add_argument("--host", help="推理服务绑定地址，可指定有线网卡 IP")
     args = parser.parse_args()
     cfg = read_config(args.config)
     configure_environment(cfg)
@@ -61,7 +62,7 @@ def main():
         evaluate(cfg, args.checkpoint, limit=args.limit)
     elif args.stage == "serve":
         from openpi.tempo_lora.inference import serve
-        serve(cfg, args.checkpoint, port=args.port)
+        serve(cfg, args.checkpoint, port=args.port, host=args.host)
     else:
         from openpi.tempo_lora.pipeline import run
         run(cfg)

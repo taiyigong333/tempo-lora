@@ -13,3 +13,5 @@
 /tempo/checkpoints/
 /tempo/caches/
 /tempo/wandb/
+/client/logs/
+**/*.egg-info/

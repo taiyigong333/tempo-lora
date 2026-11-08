@@ -1,0 +1,23 @@
+[project]
+name = "tempo-piperx-client"
+version = "0.1.0"
+description = "Piper-X TEMPO 有线推理客户端"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "numpy==1.26.4", "opencv-python-headless==4.11.0.86",
+    "pyrealsense2==2.58.2.10647", "python-can>=4.5,<5",
+    "pyyaml>=6,<7", "websockets==15.0.1", "openpi-client",
+]
+
+[tool.uv.sources]
+openpi-client = {path = "../tempo/packages/openpi-client", editable = true}
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+tempo-client = "tempo_client.cli:main"

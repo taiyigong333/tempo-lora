@@ -1,0 +1,59 @@
+{
+  "date": "2026-11-08",
+  "client_root": "/home/cv/gcj/project/baseline_fast/tempo-lora",
+  "server_root": "/data/gcj_data/fast/baseline/tempo",
+  "git_source_commit": "6f010727f06fa9e77dd967083cfdb4639d36ba2a",
+  "wired": {
+    "client_ip": "192.168.50.1",
+    "server_ip": "192.168.50.2",
+    "port": 8000,
+    "client_interface": "enp0s31f6",
+    "server_interface": "enp4s0",
+    "bidirectional_ping_loss_percent": 0
+  },
+  "model": {
+    "step": 10000,
+    "checkpoint": "step_00010000.pt",
+    "action_shape": [
+      16,
+      7
+    ],
+    "action_dtype": "float32",
+    "action_space": "absolute_joint_rad_gripper_m"
+  },
+  "replay": {
+    "source": "training_episode_000000_first_12_frames",
+    "feedback_frames": 12,
+    "batches": 3,
+    "batch_size": 4,
+    "round_trip_ms": [
+      626.8687250558287,
+      280.027445172891,
+      289.37137592583895
+    ],
+    "warm_batches_mean_ms": 284.699410549365,
+    "all_actions_finite": true,
+    "robot_commands": 0
+  },
+  "validation": {
+    "client_unit_tests_passed": 7,
+    "server_regression_tests_passed": 18,
+    "syntax_check": "passed",
+    "locked_offline_sync": "passed",
+    "websocket_source_ip": "192.168.50.1"
+  },
+  "pending": [
+    "真实双相机和CAN持续只读联调",
+    "真实持续吞吐评测",
+    "现场机器人运动与抓取成功率",
+    "用户进一步指定图形界面需求"
+  ],
+  "assumptions": [
+    "采用命令行只读客户端作为部署入口"
+  ],
+  "artifacts": {
+    "client_replay": "client/logs/wired_replay.json",
+    "server_regression": "trained_model/runtime/client_deployment/server_regression.log",
+    "server_log": "trained_model/logs/serve_wired.log"
+  }
+}
