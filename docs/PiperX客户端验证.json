@@ -36,7 +36,7 @@
     "robot_commands": 0
   },
   "validation": {
-    "client_unit_tests_passed": 7,
+    "client_unit_tests_passed": 16,
     "server_regression_tests_passed": 18,
     "syntax_check": "passed",
     "locked_offline_sync": "passed",
@@ -46,12 +46,9 @@
   "pending": [
     "真实双相机和CAN持续只读联调",
     "真实持续吞吐评测",
-    "现场机器人运动与抓取成功率",
-    "用户进一步指定图形界面需求"
+    "现场机器人运动与抓取成功率"
   ],
-  "assumptions": [
-    "采用命令行只读客户端作为部署入口"
-  ],
+  "assumptions": [],
   "artifacts": {
     "client_replay": "client/logs/wired_replay.json",
     "server_regression": "trained_model/runtime/client_deployment/server_regression.log",
@@ -59,8 +56,28 @@
   },
   "git_push": {
     "visibility": "public",
-    "state": "awaiting_explicit_user_authorization",
-    "review_rejection": "internal_paths_camera_serials_and_existing_git_history_publication",
-    "code_commit": "cac26067c714cf147280966df5c01c4a3de474e0"
+    "state": "user_authorized_and_initial_push_verified",
+    "initial_push_commit": "5b80738f6c9a79e713b9640bc3b57ca70f6f71bc",
+    "authorization": "用户明确授权推送完整项目，包含内部路径、相机序列号及原有Git历史"
+  },
+  "gui": {
+    "real_gui": true,
+    "wired_model_step": 10000,
+    "replay_feedback_frames": 12,
+    "replay_batches": 3,
+    "native_action_shape": [
+      16,
+      7
+    ],
+    "camera_previews": 2,
+    "stop_during_inference": "passed",
+    "close_during_inference": "passed",
+    "robot_commands": 0,
+    "stop_elapsed_s": 0.07132075587287545,
+    "close_elapsed_s": 0.4779378161765635,
+    "launcher": "run_gui.sh",
+    "desktop_entry": "/home/cv/桌面/Tempo-LoRA.desktop",
+    "regression_log": "client/logs/gui_validation/tests.log",
+    "integration_log": "client/logs/gui_validation/integration.json"
   }
 }

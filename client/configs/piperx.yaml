@@ -12,6 +12,11 @@ model:
   action_horizon: 16
   action_dim: 7
   action_space: absolute_joint_rad_gripper_m
+service:
+  ssh_host: gh4090piper-wired
+  project_dir: /data/gcj_data/fast/baseline/tempo
+  tmux_session: tempo_lora_inference
+  startup_timeout_s: 600
 live:
   sdk_path: /home/cv/gcj/project/baseline_fast/dynamic_vla/pyAgxArm
   firmware_version: v189

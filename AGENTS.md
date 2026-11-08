@@ -17,3 +17,4 @@
 - 正式10000步训练与32样本离线评估已完成，先读 docs/训练完成报告.md 和 trained_model/runtime/final_verification_20261108.json。最终模型/优化器/scheduler均10000、W&B finished，禁止例行巡检重新启动训练；后续新实验需按用户新要求执行。
 - PiperX有线客户端部署在 `/home/cv/gcj/project/baseline_fast/tempo-lora`，先读 `docs/PiperX客户端部署.md` 和验证JSON。客户端独立环境在client/.venv，现场已有其他GUI，访问相机前核对占用。
 - Tempo在线服务会话tempo_lora_inference，192.168.50.2:8000，最终10000步模型。当前客户端只读，输出绝对关节rad与夹爪m，实机执行需用户进一步明确要求。
+- PiperX图形入口为根目录run_gui.sh，GUI后台任务位于client/src/tempo_client/session.py。用户已明确授权完整项目推送至公开tempo-lora仓库，后续相关提交可继续同步；GUI测试应使用独立显示环境和录制反馈。

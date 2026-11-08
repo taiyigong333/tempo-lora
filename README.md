@@ -38,4 +38,4 @@ tail -f trained_model/logs/train_alltrain.log
 
 ## PiperX 有线客户端
 
-PiperX 路径 `/home/cv/gcj/project/baseline_fast/tempo-lora`，在项目根目录运行 `client/run.sh probe`。客户端独立环境位于 `client/.venv`，连接 `192.168.50.2:8000` 的最终10000步模型。支持反馈回放与实机只读推理。部署、启动、数据契约与验证记录见 `docs/PiperX客户端部署.md`。
+PiperX 路径 `/home/cv/gcj/project/baseline_fast/tempo-lora`，桌面双击“Tempo LoRA · PiperX”或在项目根目录运行 `./run_gui.sh` 打开中文图形界面，命令行连接检查为 `client/run.sh probe`。客户端独立环境位于 `client/.venv`，连接 `192.168.50.2:8000` 的最终10000步模型。支持反馈回放与实机只读推理。部署、启动、数据契约与验证记录见 `docs/PiperX客户端部署.md`。

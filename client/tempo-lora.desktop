@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Tempo LoRA (PiperX)
+Name[zh_CN]=Tempo LoRA · PiperX
+Comment=有线模型连接、反馈回放与现场只读推理
+Exec=/home/cv/gcj/project/baseline_fast/tempo-lora/run_gui.sh
+Path=/home/cv/gcj/project/baseline_fast/tempo-lora
+Icon=applications-science
+Terminal=false
+Categories=Science;Education;
+StartupNotify=true

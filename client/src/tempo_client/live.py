@@ -195,7 +195,7 @@ class LiveFeedback:
             for name, settings in self.cfg["cameras"].items():
                 self._start(self._sample_camera, name, settings)
             deadline = time.monotonic() + self.cfg["startup_timeout_s"]
-            while True:
+            while not self.stop.is_set():
                 if self.error is not None:
                     raise RuntimeError(str(self.error)) from self.error
                 with self.lock:
@@ -205,6 +205,10 @@ class LiveFeedback:
                 if time.monotonic() >= deadline:
                     raise TimeoutError("CAN或双相机启动超时")
                 self.stop.wait(.02)
+            if self.error is not None:
+                raise RuntimeError(str(self.error)) from self.error
+            if self.stop.is_set():
+                raise InterruptedError("硬件启动已取消")
             self._start(self._produce, time.time())
             return self
         except BaseException:

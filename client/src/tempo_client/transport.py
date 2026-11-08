@@ -40,7 +40,7 @@ class Client:
                 raise RuntimeError("网络出口不是配置中的有线IP")
             self.ws = connect(f"ws://{connection['host']}:{connection['port']}", sock=raw,
                               proxy=None, compression=None, max_size=None,
-                              open_timeout=connection["connect_timeout_s"], ping_timeout=300)
+                              open_timeout=connection["connect_timeout_s"], close_timeout=2, ping_timeout=300)
             self.metadata = self._receive()
             for key in ("config", "step", "action_horizon", "action_space"):
                 if self.metadata.get(key) != cfg["model"][key]:
@@ -84,6 +84,14 @@ class Client:
     def close(self):
         if self.ws is not None:
             self.ws.close()
+
+    def abort(self):
+        # GUI停止不能等待模型返回；关闭当前socket中断recv，新任务重建episode。
+        if self.ws is not None:
+            try:
+                self.ws.socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
 
     def __enter__(self):
         return self

@@ -4,7 +4,7 @@
 
 2026-11-08 将轻量客户端部署到 PiperX 的 `/home/cv/gcj/project/baseline_fast/tempo-lora`，使用 `https://github.com/taiyigong333/tempo-lora.git` 管理同一项目。4090 的模型及依赖留在 `/data/gcj_data/fast/baseline/tempo`。
 
-客户端采用命令行入口，默认提供握手、录制数据回放和硬件只读推理。真实运动执行与图形界面待用户进一步指定。
+客户端提供中文图形界面与命令行入口，支持模型服务启动、握手校验、录制数据回放、硬件只读推理、双图预览、实测关节与动作块展示、停止任务及日志查看。实机运动执行待用户进一步指定。
 
 ## 有线网络
 
@@ -15,7 +15,27 @@
 
 两端已有静态有线连接。双向 ping 无丢包，初检平均约 0.2ms。客户端绑定本机 `192.168.50.1` 创建连接，并校验实际出口。模型服务绑定 `192.168.50.2:8000`。
 
-## PiperX 启动
+## 图形界面启动
+
+在 PiperX 桌面双击 **Tempo LoRA · PiperX**，或在应用菜单打开同名应用。也可运行以下入口。
+
+```bash
+cd /home/cv/gcj/project/baseline_fast/tempo-lora
+./run_gui.sh
+```
+
+1. 点击“检查连接”，确认有线地址、10000步模型与16×7动作块。
+2. 服务尚未启动时点击“启动模型服务”，界面通过现有有线SSH检查Tempo自己的tmux会话并等待模型就绪。
+3. 点击“录制数据回放”可用部署样例查看双相机图像、实测关节和模型预测。默认每批4帧。
+4. 现场释放其他程序占用的相机后，设置时长并点击“现场只读推理”。界面显示关节rad与夹爪m，输出保存至每轮日志。
+5. 点击“停止当前任务”中断网络接收和本轮采样，下一轮使用新episode。关闭窗口会先结束当前任务。模型服务保留其独立远端会话。
+6. 点击“打开日志”查看本轮config.json、metadata.json、predictions.jsonl与summary.json。失败时另存error.log。
+
+图形界面以后台线程执行网络与采样，事件队列驱动Tk更新。桌面重复启动通过文件锁限制为一个GUI进程。应用菜单入口位于 `/home/cv/.local/share/applications/tempo-lora.desktop`，桌面入口位于 `/home/cv/桌面/Tempo-LoRA.desktop`，仓库内保留 `client/tempo-lora.desktop`。
+
+GUI已在独立虚拟屏幕上完成真实有线模型联调，回放12帧、3批，双图与16步预测显示通过。模型推理期间停止和关闭窗口通过，客户端共16项回归通过。截图与详细报告保存在 `client/logs/gui_validation/`。现场真实CAN/双相机持续联调仍待验证。
+
+## 命令行启动
 
 ```bash
 cd /home/cv/gcj/project/baseline_fast/tempo-lora
@@ -64,7 +84,7 @@ tail -f trained_model/logs/serve_wired.log
 
 ## Git 维护
 
-GitHub 初始为空仓库，已确认可见性为 public。自动审批因内部路径、相机序列号和历史记录的公开外发而拒绝推送，当前完整提交仅保存在两台服务器，等待用户明确授权推送。PiperX 从 4090 的完整 main 历史创建工作副本，保留原项目历史。origin fetch 使用用户给定 HTTPS URL，push 使用 PiperX 已有 GitHub SSH 身份。`deployment-source` 指向 4090 的有线 SSH 路径，可用于两端同步。
+GitHub 初始为空仓库，已确认可见性为 public。用户已明确授权推送包含内部路径、相机序列号和原有Git历史的完整项目，初次完整推送5b80738已成功。GUI更新继续通过同一main分支维护。PiperX 从 4090 的完整 main 历史创建工作副本，保留原项目历史。origin fetch 使用用户给定 HTTPS URL，push 使用 PiperX 已有 GitHub SSH 身份。`deployment-source` 指向 4090 的有线 SSH 路径，可用于两端同步。
 
 ```bash
 git fetch origin
