@@ -56,6 +56,7 @@ class Client:
         self.episode = uuid.uuid4().hex
         self.previous = None
         self.packer = msgpack_numpy.Packer()
+        self.reserved = False
 
     def _receive(self):
         response = self.ws.recv(timeout=self.cfg["connection"]["inference_timeout_s"])
@@ -63,17 +64,53 @@ class Client:
             raise RuntimeError(response)
         return msgpack_numpy.unpackb(response)
 
-    def infer(self, frames):
+    def validate_mode(self, mode, prompt):
+        if mode not in self.metadata.get("modes", ["tempo"]):
+            raise ValueError("服务器尚未支持所选推理模式，请启动更新后的模型服务")
+        if prompt not in self.metadata.get("task_prompts", [prompt]):
+            raise ValueError("所选任务与当前服务模型不匹配")
+        if mode == "rtc" and self.metadata.get("rtc_algorithm") != "decoded_action_vjp_soft_prefix":
+            raise ValueError("服务器RTC潜变量引导算法不匹配")
+
+    def reserve(self):
+        if self.reserved:
+            return
+        if self.metadata.get("protocol_version", 0) < 2:
+            raise ValueError("模型服务需要更新到任务与运动控制协议，请启动新版服务")
+        try:
+            self.ws.send(self.packer.pack({"operation": "claim"}))
+            if self._receive().get("claimed") is not True:
+                raise RuntimeError("服务器推理会话预约失败")
+        except BaseException:
+            self.close()
+            raise
+        self.reserved = True
+
+    def infer(self, frames, *, mode="tempo", prompt=None, rtc_prefix=None, rtc_delay=0):
         stamp = validate_frames(frames, self.cfg["model"]["fps"], self.previous)
+        if mode not in ("tempo", "temporal_ensemble", "rtc"):
+            raise ValueError("推理模式不支持")
+        request = {"episode_id": self.episode, "feedback": frames, "mode": mode}
+        if prompt is not None:
+            request["prompt"] = prompt
+        if rtc_prefix is not None:
+            prefix = np.asarray(rtc_prefix, np.float32)
+            if (mode != "rtc" or prefix.ndim != 2 or prefix.shape[1] != 7
+                    or not 1 <= len(prefix) <= self.cfg["model"]["action_horizon"]
+                    or not np.isfinite(prefix).all() or type(rtc_delay) is not int or not 0 <= rtc_delay <= len(prefix)):
+                raise ValueError("RTC绝对动作前缀或延迟不合法")
+            request.update(rtc_prefix=prefix, rtc_delay=rtc_delay)
         begin = time.monotonic()
         # 失败后关闭连接，避免服务端已消费输入时重发同一批并污染历史。
         try:
-            self.ws.send(self.packer.pack({"episode_id": self.episode, "feedback": frames}))
+            self.ws.send(self.packer.pack(request))
             result = self._receive()
             actions = np.asarray(result["actions"])
             expected = (self.cfg["model"]["action_horizon"], self.cfg["model"]["action_dim"])
             if actions.shape != expected or actions.dtype != np.float32 or not np.isfinite(actions).all():
                 raise ValueError("服务器返回动作形状、类型或有限性错误")
+            if result.get("mode", "tempo") != mode:
+                raise ValueError("服务端实际推理模式与请求不匹配")
         except BaseException:
             self.close()
             raise

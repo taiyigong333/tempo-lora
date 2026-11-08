@@ -16,6 +16,34 @@ def frame(stamp=0):
 
 
 class ClientTests(unittest.TestCase):
+    def test_reservation_is_required_before_motion_and_is_idempotent(self):
+        client = Client.__new__(Client)
+        client.metadata = {"protocol_version": 2}
+        client.reserved = False
+        client.ws, client.packer = Mock(), Mock()
+        client._receive = Mock(return_value={"claimed": True})
+        client.reserve()
+        client.reserve()
+        client.ws.send.assert_called_once()
+        self.assertTrue(client.reserved)
+
+    def test_legacy_protocol_cannot_reserve_motion_session(self):
+        client = Client.__new__(Client)
+        client.metadata, client.reserved = {}, False
+        client.ws = Mock()
+        with self.assertRaisesRegex(ValueError, "需要更新"):
+            client.reserve()
+        client.ws.send.assert_not_called()
+
+    def test_failed_reservation_closes_connection(self):
+        client = Client.__new__(Client)
+        client.metadata, client.reserved = {"protocol_version": 2}, False
+        client.ws, client.packer = Mock(), Mock()
+        client._receive = Mock(return_value={"claimed": False})
+        with self.assertRaises(RuntimeError):
+            client.reserve()
+        client.ws.close.assert_called_once()
+
     def test_continuous_feedback(self):
         self.assertAlmostEqual(validate_frames([frame(0), frame(1 / 30)], 30), 1 / 30)
         self.assertAlmostEqual(validate_frames([frame(2 / 30)], 30, 1 / 30), 2 / 30)

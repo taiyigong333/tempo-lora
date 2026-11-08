@@ -1,4 +1,7 @@
 # 两端使用已有网线直连地址，连接时校验本机出口。
+tasks_config: tasks.yaml
+inference_config: inference.yaml
+safety_config: safety.yaml
 connection:
   host: 192.168.50.2
   local_ip: 192.168.50.1

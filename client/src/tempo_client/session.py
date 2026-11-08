@@ -14,6 +14,9 @@ from tempo_client.cli import DEFAULT_CONFIG, load_config, replay_frames, report
 from tempo_client.cameras import CameraStream
 from tempo_client.live import LiveFeedback
 from tempo_client.transport import Client
+from tempo_client.settings import select_runtime
+from tempo_client.robot import Robot
+from tempo_client.control import InferenceRun
 
 
 class SessionWorker:
@@ -23,6 +26,7 @@ class SessionWorker:
         self.thread = None
         self.client = None
         self.source = None
+        self.robot = None
         self.cameras = None
         self.camera_signature = None
         self.preview_stop = threading.Event()
@@ -32,12 +36,20 @@ class SessionWorker:
         self.preview_enabled = threading.Event()
         self.preview_enabled.set()
 
-    def start(self, mode, config_path, *, replay_path=None, duration=10, batch_size=4, log_root=None):
+    def start(self, mode, config_path, *, replay_path=None, duration=10, batch_size=4, log_root=None,
+              task_id=None, inference_mode=None, execute=False, motion_confirmed=False, home_before=True,
+              parameters=None):
         if self.thread is not None and self.thread.is_alive():
             raise RuntimeError("请等待当前任务结束")
+        if self.robot is not None and mode != "release":
+            raise RuntimeError("上轮机器人资源尚未释放，请先停止并检查清理结果")
+        if execute and (mode != "live" or motion_confirmed is not True):
+            raise ValueError("实机执行需要本轮现场确认")
+        options = {"task_id": task_id, "inference_mode": inference_mode, "execute": bool(execute),
+                   "home_before": bool(home_before), "parameters": parameters or {}}
         self.cancel.clear()
         self.thread = threading.Thread(target=self._run, args=(mode, config_path, replay_path,
-            duration, batch_size, log_root), daemon=True, name="tempo-gui-session")
+            duration, batch_size, log_root, options), daemon=True, name="tempo-gui-session")
         self.thread.start()
 
     def stop(self):
@@ -46,6 +58,11 @@ class SessionWorker:
             self.source.stop.set()
         if self.client is not None:
             self.client.abort()
+        if self.robot is not None:
+            try:
+                self.robot.hold()
+            except Exception as error:
+                self.events.put(("status", "停止保持反馈异常 " + str(error)))
 
     def _check_cancel(self):
         if self.cancel.is_set():
@@ -157,10 +174,13 @@ class SessionWorker:
                 self.cancel.wait(2)
         raise TimeoutError("模型服务启动超过配置时限，请查看4090服务日志")
 
-    def _predict(self, frames, stream, summary):
+    def _predict(self, frames, stream, summary, cfg=None, prefix=None):
         self._check_cancel()
         self.events.put(("frame", frames[-1]))
-        result = self.client.infer(frames)
+        kwargs = {} if cfg is None else {"mode": cfg["inference"]["mode"], "prompt": cfg["task"]["prompt"]}
+        if prefix is not None:
+            kwargs.update(rtc_prefix=prefix, rtc_delay=0)
+        result = self.client.infer(frames, **kwargs)
         self._check_cancel()
         record = report(result, frames)
         record["state"] = frames[-1]["state"].tolist()
@@ -169,8 +189,9 @@ class SessionWorker:
         summary["batches"] += 1
         summary["feedback_frames"] += len(frames)
         self.events.put(("prediction", record))
+        return result
 
-    def _run(self, mode, config_path, replay_path, duration, batch_size, log_root):
+    def _run(self, mode, config_path, replay_path, duration, batch_size, log_root, options):
         log_root = Path(log_root or DEFAULT_CONFIG.parents[1] / "logs/gui")
         directory = log_root / datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         summary = {"mode": mode, "batches": 0, "feedback_frames": 0, "robot_commands": 0,
@@ -183,6 +204,12 @@ class SessionWorker:
                 summary["outcome"] = "completed"
                 return
             cfg = load_config(config_path)
+            if mode in ("live", "replay") and "task_catalog" in cfg:
+                cfg["inference"].update(options["parameters"])
+                cfg = select_runtime(cfg, options["task_id"], options["inference_mode"])
+                summary.update(task_id=cfg["task"]["id"], prompt=cfg["task"]["prompt"],
+                               inference_mode=cfg["inference"]["mode"], execute=options["execute"],
+                               home_before=options["home_before"])
             (directory / "config.json").write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n")
             if mode == "camera":
                 self.events.put(("status", "正在开启持续相机流"))
@@ -202,19 +229,35 @@ class SessionWorker:
                     self.take_preview()
                     self.events.put(("status", "正在回放录制反馈"))
                     frames = replay_frames(replay_path)
+                    selected = cfg if "task" in cfg else None
+                    if selected is not None:
+                        self.client.validate_mode(cfg["inference"]["mode"], cfg["task"]["prompt"])
+                        self.client.reserve()
+                    prefix = None
                     for begin in range(0, len(frames), batch_size):
-                        self._predict(frames[begin:begin + batch_size], stream, summary)
+                        result = self._predict(frames[begin:begin + batch_size], stream, summary, selected, prefix)
+                        if selected is not None and cfg["inference"]["mode"] == "rtc":
+                            prefix = result["actions"][min(batch_size, len(result["actions"]) - 1):].copy()
                 elif mode == "live":
-                    self.events.put(("status", "正在准备持续相机流与本轮CAN只读采样"))
+                    self.client.validate_mode(cfg["inference"]["mode"], cfg["task"]["prompt"])
+                    self.client.reserve()
+                    self.events.put(("status", "正在准备持续相机流与本轮CAN反馈"))
                     summary["camera_stream"] = self._prepare_cameras(cfg)
-                    self.source = LiveFeedback(cfg, cameras=self.cameras)
+                    self.robot = Robot(cfg)
+                    self.robot.connect()
+                    if options["execute"]:
+                        if options["home_before"]:
+                            self.events.put(("status", "正在按现场确认的关节目标低速归位"))
+                            self.robot.go_home(self.cancel)
+                        self.events.put(("status", "正在确认机器人CAN关节控制模式"))
+                        self.robot.prepare_motion(self.cancel, cfg["safety"]["speed_percent"])
+                    self.source = LiveFeedback(cfg, cameras=self.cameras, robot=self.robot)
                     self._check_cancel()
                     with self.source:
-                        self.events.put(("status", "现场只读推理中"))
-                        until = time.monotonic() + duration
-                        while time.monotonic() < until:
-                            self._check_cancel()
-                            self._predict(self.source.take(), stream, summary)
+                        label = "实机执行中" if options["execute"] else "现场只读推理中"
+                        self.events.put(("status", label))
+                        InferenceRun(cfg, self.client, self.source, self.robot, self.cancel,
+                                     self.events, stream, summary, options["execute"]).run(duration)
                 elif mode not in ("probe", "service"):
                     raise ValueError("未知的GUI任务")
             self._check_cancel()
@@ -226,6 +269,19 @@ class SessionWorker:
                 if directory.is_dir():
                     (directory / "error.log").write_text(traceback.format_exc())
         finally:
+            if self.robot is not None:
+                try:
+                    self.robot.close()
+                except Exception as error:
+                    summary["robot_close_error"] = str(error)
+                    summary["outcome"] = "error"
+                    self.events.put(("status", "机器人停止清理异常 " + str(error)))
+                else:
+                    closed_robot = self.robot
+                    self.robot = None
+                    summary["robot_commands"] = closed_robot.sent_commands
+                if self.robot is not None:
+                    summary["robot_commands"] = self.robot.sent_commands
             if self.client is not None:
                 try:
                     self.client.close()

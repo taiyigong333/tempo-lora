@@ -44,9 +44,8 @@
     "sdk_and_camera_dependency_import": "passed_without_opening_hardware"
   },
   "pending": [
-    "真实CAN参与的持续只读推理联调",
-    "真实持续吞吐评测",
-    "现场机器人运动与抓取成功率"
+    "TE/RTC持续吞吐改善及再验证，保持10次去噪和既有保护",
+    "现场每轮确认后的机器人运动与抓取成功率"
   ],
   "assumptions": [],
   "artifacts": {
@@ -115,5 +114,185 @@
     ],
     "report": "client/logs/camera_busy_fix/real_camera_verification.json",
     "tests": "client/logs/camera_busy_fix/tests.log"
+  },
+  "mode_control_upgrade": {
+    "date": "2026-11-09",
+    "baseline_commit": "a8c54c548a8b910eb12f40fbc40a8c49e0739f41",
+    "client_tests_passed": 53,
+    "server_tests_passed": 28,
+    "modes": [
+      "tempo",
+      "temporal_ensemble",
+      "rtc"
+    ],
+    "denoise_steps": 10,
+    "rtc_latency_policy": "stop_on_limit",
+    "synthetic_motion_six_combinations": "passed",
+    "real_hardware": {
+      "hardware": "real dual RealSense and PiperX CAN, read only",
+      "automatic_motion_confirmation": false,
+      "sessions": [
+        {
+          "mode": "probe",
+          "batches": 0,
+          "feedback_frames": 0,
+          "robot_commands": 0,
+          "outcome": "completed",
+          "log_dir": "/home/cv/gcj/project/baseline_fast/tempo-lora/client/logs/gui/20261109_004655_204615"
+        },
+        {
+          "mode": "camera",
+          "batches": 0,
+          "feedback_frames": 0,
+          "robot_commands": 0,
+          "outcome": "completed",
+          "log_dir": "/home/cv/gcj/project/baseline_fast/tempo-lora/client/logs/gui/20261109_004655_295105",
+          "camera_stream": {
+            "reused": false,
+            "process_id": 644276,
+            "buffer_frames_per_camera": 9
+          }
+        },
+        {
+          "mode": "live",
+          "batches": 8,
+          "feedback_frames": 91,
+          "robot_commands": 0,
+          "outcome": "completed",
+          "log_dir": "/home/cv/gcj/project/baseline_fast/tempo-lora/client/logs/gui/20261109_004656_386739",
+          "task_id": "rotating_red_square",
+          "prompt": "grab the rotating red square",
+          "inference_mode": "tempo",
+          "execute": false,
+          "home_before": true,
+          "camera_stream": {
+            "reused": true,
+            "process_id": 644276,
+            "buffer_frames_per_camera": 9
+          },
+          "planned_targets": 7,
+          "safety_violations": 0,
+          "rtc_guided_requests": 0
+        },
+        {
+          "mode": "live",
+          "batches": 4,
+          "feedback_frames": 32,
+          "robot_commands": 0,
+          "outcome": "cancelled",
+          "log_dir": "/home/cv/gcj/project/baseline_fast/tempo-lora/client/logs/gui/20261109_004700_377143",
+          "task_id": "rotating_red_square",
+          "prompt": "grab the rotating red square",
+          "inference_mode": "tempo",
+          "execute": false,
+          "home_before": true,
+          "camera_stream": {
+            "reused": true,
+            "process_id": 644276,
+            "buffer_frames_per_camera": 9
+          },
+          "planned_targets": 4,
+          "safety_violations": 1,
+          "rtc_guided_requests": 0
+        },
+        {
+          "mode": "live",
+          "batches": 2,
+          "feedback_frames": 7,
+          "robot_commands": 0,
+          "outcome": "error",
+          "log_dir": "/home/cv/gcj/project/baseline_fast/tempo-lora/client/logs/gui/20261109_004702_627995",
+          "task_id": "rotating_red_square",
+          "prompt": "grab the rotating red square",
+          "inference_mode": "temporal_ensemble",
+          "execute": false,
+          "home_before": true,
+          "camera_stream": {
+            "reused": true,
+            "process_id": 644276,
+            "buffer_frames_per_camera": 9
+          },
+          "planned_targets": 15,
+          "safety_violations": 0,
+          "rtc_guided_requests": 0,
+          "error": "异步动作缓冲耗尽或观测过期"
+        },
+        {
+          "mode": "live",
+          "batches": 1,
+          "feedback_frames": 1,
+          "robot_commands": 0,
+          "outcome": "error",
+          "log_dir": "/home/cv/gcj/project/baseline_fast/tempo-lora/client/logs/gui/20261109_004703_865124",
+          "task_id": "rotating_red_square",
+          "prompt": "grab the rotating red square",
+          "inference_mode": "rtc",
+          "execute": false,
+          "home_before": true,
+          "camera_stream": {
+            "reused": true,
+            "process_id": 644276,
+            "buffer_frames_per_camera": 9
+          },
+          "planned_targets": 8,
+          "safety_violations": 0,
+          "rtc_guided_requests": 0,
+          "error": "异步动作缓冲耗尽或观测过期"
+        },
+        {
+          "mode": "live",
+          "batches": 4,
+          "feedback_frames": 30,
+          "robot_commands": 0,
+          "outcome": "cancelled",
+          "log_dir": "/home/cv/gcj/project/baseline_fast/tempo-lora/client/logs/gui/20261109_004704_884246",
+          "task_id": "rotating_red_square",
+          "prompt": "grab the rotating red square",
+          "inference_mode": "tempo",
+          "execute": false,
+          "home_before": true,
+          "camera_stream": {
+            "reused": true,
+            "process_id": 644276,
+            "buffer_frames_per_camera": 9
+          },
+          "planned_targets": 4,
+          "safety_violations": 0,
+          "rtc_guided_requests": 0
+        }
+      ],
+      "verification_completed": true,
+      "f5_and_escape": true,
+      "idle_preview_updates": true,
+      "kept_streaming": true,
+      "same_camera_process": 644276,
+      "desktop_screenshot": "Xwayland screen capture unavailable; independent GUI screenshot checked"
+    },
+    "gpu_rtc": {
+      "native_shape": [
+        16,
+        7
+      ],
+      "native_dtype": "float32",
+      "first_ms": 492.4429329112172,
+      "guided_ms": 466.12896397709846,
+      "warm_guided_ms": [
+        469.50883511453867,
+        465.0927921757102,
+        469.93946097791195,
+        475.945086684078,
+        473.92329294234514,
+        466.12896397709846
+      ],
+      "prefix_length": 13,
+      "all_finite": true,
+      "parameter_gradients": 0,
+      "peak_memory_gb": 8.299862528
+    },
+    "known_limits": [
+      "TE/RTC真实连续异步运行触发缓冲耗尽或观测过期保护",
+      "一次只读预测夹爪目标越界，实机路径会拒绝",
+      "真实归位、实机运动及抓取成功率未验证"
+    ]
   }
 }

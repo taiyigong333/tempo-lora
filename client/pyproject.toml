@@ -6,7 +6,7 @@ requires-python = ">=3.11,<3.12"
 dependencies = [
     "numpy==1.26.4", "opencv-python-headless==4.11.0.86",
     "pyrealsense2==2.58.2.10647", "python-can>=4.5,<5",
-    "pyyaml>=6,<7", "websockets==15.0.1", "openpi-client",
+    "pyyaml>=6,<7", "websockets==15.0.1", "openpi-client", "scipy>=1.13,<2",
 ]
 
 [tool.uv.sources]

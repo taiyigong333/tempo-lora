@@ -14,7 +14,7 @@ from openpi.policies.policy import Policy
 from openpi.shared.normalize import deserialize_json
 from openpi.tempo_lora.checkpoint import find_latest_checkpoint, load_policy_checkpoint
 from openpi.tempo_lora.config import artifact_root, configure_environment, make_train_config, model_config
-from openpi.tempo_lora.data import WindowDataset, history_buckets, json_write, split_data
+from openpi.tempo_lora.data import WindowDataset, delta_mask, history_buckets, json_write, split_data
 from openpi.tempo_lora.model import build_model
 
 
@@ -40,7 +40,7 @@ def create_policy(checkpoint, *, pytorch_device=None, sample_kwargs=None):
     def native_actions(result):
         # 归一化统计经 JSON 加载可能是 float64，控制接口固定接收 float32。
         return {**result, "actions": np.asarray(result["actions"], dtype=np.float32)}
-    return Policy(model, is_pytorch=True, pytorch_device=pytorch_device or "cuda",
+    policy = Policy(model, is_pytorch=True, pytorch_device=pytorch_device or "cuda",
                   transforms=[*dc.data_transforms.inputs, transforms.Normalize(norm, use_quantiles=True),
                               *dc.model_transforms.inputs],
                   output_transforms=[*dc.model_transforms.outputs, transforms.Unnormalize(norm, use_quantiles=True),
@@ -49,12 +49,20 @@ def create_policy(checkpoint, *, pytorch_device=None, sample_kwargs=None):
                   metadata={"config": cfg["name"], "native_action_dim": cfg["data"]["action_dim"],
                             "action_horizon": cfg["model"]["action_horizon"],
                             "action_space": "absolute_joint_rad_gripper_m", "feedback_fps": cfg["data"]["fps"],
-                            "execute_steps": cfg["inference"]["execute_steps"], "ema_enabled": False})
+                            "execute_steps": cfg["inference"]["execute_steps"], "ema_enabled": False,
+                            "modes": ["tempo", "temporal_ensemble", "rtc"],
+                            "rtc_algorithm": "decoded_action_vjp_soft_prefix",
+                            "task_prompts": [cfg["data"]["prompt"]], "protocol_version": 2})
+    policy.tempo_norm_stats = norm
+    return policy
 
 
 class OnlinePolicy(BasePolicy):
-    def __init__(self, policy, cfg, *, sam_stream=None):
+    def __init__(self, policy, cfg, *, sam_stream=None, rtc_max_guidance=10.0):
         self.policy, self.cfg = policy, cfg
+        if not np.isfinite(rtc_max_guidance) or rtc_max_guidance <= 0:
+            raise ValueError("RTC引导上限必须为有限正数")
+        self.rtc_max_guidance = float(rtc_max_guidance)
         if sam_stream is None:
             from openpi.tempo_lora.sam import SAM2Stream, build_sam2_tiny
             sam_stream = SAM2Stream(build_sam2_tiny("cuda"), precision=cfg["model"]["dtype"])
@@ -114,6 +122,12 @@ class OnlinePolicy(BasePolicy):
     def infer(self, obs, *, noise=None):
         if "episode_id" not in obs:
             raise ValueError("在线输入必须携带 episode_id，防止跨轨迹状态泄漏")
+        mode = obs.get("mode", "tempo")
+        if mode not in ("tempo", "temporal_ensemble", "rtc"):
+            raise ValueError("不支持的推理模式")
+        prompt = obs.get("prompt", self.cfg["data"]["prompt"])
+        if prompt != self.cfg["data"]["prompt"]:
+            raise ValueError("所选任务与当前模型训练任务不匹配")
         new_episode = obs.get("reset", False) or self.episode != obs["episode_id"]
         frames = obs.get("feedback")
         if frames is None:
@@ -134,33 +148,64 @@ class OnlinePolicy(BasePolicy):
                 if rgb.shape != (224, 224, 3) or rgb.dtype != np.uint8:
                     raise ValueError("在线图像需要 224×224 RGB uint8")
             previous = stamp
+        sampling = {}
+        prefix = obs.get("rtc_prefix")
+        if prefix is not None:
+            from openpi.tempo_lora.rtc import prefix_weights
+            prefix = np.asarray(prefix, np.float32)
+            horizon, dim = self.cfg["model"]["action_horizon"], self.cfg["data"]["action_dim"]
+            if (mode != "rtc" or prefix.ndim != 2 or prefix.shape[1] != dim
+                    or not 1 <= len(prefix) <= horizon or not np.isfinite(prefix).all()):
+                raise ValueError("RTC前缀必须为原生绝对关节和夹爪动作")
+            weights = prefix_weights(obs.get("rtc_delay", 0), len(prefix), horizon)
+            # 历史动作块属于旧state锚点，换到本轮state后再使用训练归一化。
+            target = transforms.DeltaActions(delta_mask(dim))({"actions": prefix.copy(), "state": np.asarray(frames[-1]["state"], np.float32)})
+            norm = self.policy.tempo_norm_stats
+            target = transforms.Normalize(norm, use_quantiles=True)(target)["actions"]
+            padded = np.zeros((1, horizon, self.cfg["model"]["action_dim"]), np.float32)
+            padded[0, :len(prefix), :dim] = target
+            mask = np.zeros_like(padded)
+            mask[0, :, :dim] = weights[:, None]
+            sampling = {"rtc_prefix": padded, "rtc_weights": mask, "rtc_max_guidance": self.rtc_max_guidance}
         if new_episode:
             self.reset()
             self.episode = obs["episode_id"]
         timer = time.monotonic()
         for frame in frames:
             self.ingest(frame)
-        result = self.policy.infer(self.inputs(), noise=noise)
+        result = self.policy.infer(self.inputs(), noise=noise, **({"sample_kwargs": sampling} if sampling else {}))
         result["end_to_end_ms"] = (time.monotonic() - timer) * 1000
+        result["mode"] = mode
+        result["rtc_prefix_length"] = 0 if prefix is None else len(prefix)
         return result
 
     @property
     def metadata(self):
-        return self.policy.metadata
+        return {**self.policy.metadata, "rtc_max_guidance": self.rtc_max_guidance}
 
 
 def serve(cfg, checkpoint=None, *, port=None, host=None):
     from openpi.serving.websocket_policy_server import WebsocketPolicyServer
+    rtc_max_guidance = cfg["inference"].get("rtc_max_guidance", 10.0)
     path = checkpoint_file(checkpoint or cfg["paths"]["run"])
     saved = load_policy_checkpoint(path)
     cfg = saved["config"]
     configure_environment(cfg)
-    policy = OnlinePolicy(create_policy(path), cfg)
+    policy = OnlinePolicy(create_policy(path), cfg, rtc_max_guidance=rtc_max_guidance)
+    # 先预热原生与RTC路径，再开放端口，首轮控制沿用正常帧龄保护。
+    state = np.asarray(policy.policy.tempo_norm_stats["state"].mean, np.float32)[:cfg["data"]["action_dim"]]
+    images = {camera: np.zeros((224, 224, 3), np.uint8) for camera in cfg["data"]["cameras"]}
+    warm = policy.infer({"episode_id": "__startup_warmup__", "timestamp": 0., "state": state, "images": images})
+    policy.infer({"episode_id": "__startup_warmup__", "mode": "rtc",
+                  "feedback": [{"timestamp": index / cfg["data"]["fps"], "state": state, "images": images}
+                               for index in range(1, 4)],
+                  "rtc_prefix": warm["actions"], "rtc_delay": 1})
+    policy.reset()
     # 服务地址是部署参数，独立于检查点内不可变的训练配置。
     metadata = {**policy.metadata, "checkpoint": path.name, "step": saved["step"]}
     WebsocketPolicyServer(policy, host=host if host is not None else cfg["inference"]["host"],
                           port=port if port is not None else cfg["inference"]["port"],
-                          metadata=metadata).serve_forever()
+                          metadata=metadata, single_client=True).serve_forever()
 
 
 @torch.no_grad()

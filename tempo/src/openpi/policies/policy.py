@@ -65,7 +65,7 @@ class Policy(BasePolicy):
             self._rng = rng or jax.random.key(0)
 
     @override
-    def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
+    def infer(self, obs: dict, *, noise: np.ndarray | None = None, sample_kwargs: dict | None = None) -> dict:  # type: ignore[misc]
         # Make a copy since transformations may modify the inputs in place.
         inputs = jax.tree.map(lambda x: x, obs)
         inputs = self._input_transform(inputs)
@@ -79,7 +79,7 @@ class Policy(BasePolicy):
             sample_rng_or_pytorch_device = self._pytorch_device
 
         # Prepare kwargs for sample_actions
-        sample_kwargs = dict(self._sample_kwargs)
+        sample_kwargs = {**self._sample_kwargs, **(sample_kwargs or {})}
         if noise is not None:
             noise = torch.from_numpy(noise).to(self._pytorch_device) if self._is_pytorch_model else jnp.asarray(noise)
 

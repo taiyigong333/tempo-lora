@@ -17,6 +17,14 @@ def load_config(path):
     path = Path(path).resolve()
     cfg = yaml.safe_load(path.read_text())
     cfg["live"]["camera_parameters"] = str(path.parent / cfg["live"]["camera_parameters"])
+    for key, filename, destination in (("tasks_config", "tasks.yaml", "task_catalog"),
+                                        ("inference_config", "inference.yaml", "inference")):
+        source = path.parent / cfg.get(key, filename)
+        if source.is_file():
+            cfg[destination] = yaml.safe_load(source.read_text())
+    safety = path.parent / cfg.get("safety_config", "safety.yaml")
+    if safety.is_file():
+        cfg.update(yaml.safe_load(safety.read_text()))
     return cfg
 
 

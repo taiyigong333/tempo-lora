@@ -14,6 +14,7 @@ from PIL import Image, ImageTk
 
 from tempo_client.cli import DEFAULT_CONFIG, load_config
 from tempo_client.session import SessionWorker
+from tempo_client.settings import MODE_LABELS, select_runtime
 
 
 class TempoApp:
@@ -26,8 +27,20 @@ class TempoApp:
         self.log_dir = DEFAULT_CONFIG.parents[1] / "logs/gui"
         self.config_path = tk.StringVar(value=str(Path(config_path).resolve()))
         self.replay_path = tk.StringVar(value=str(Path(config_path).resolve().parents[1] / "logs/feedback_replay.npz"))
-        self.duration = tk.StringVar(value="10")
+        self.duration = tk.StringVar(value="0")
         self.batch_size = tk.StringVar(value="4")
+        self.task_label = tk.StringVar()
+        self.mode_label = tk.StringVar(value=MODE_LABELS["tempo"])
+        self.execute = tk.BooleanVar(value=False)
+        self.home_before = tk.BooleanVar(value=True)
+        self.execution_label = tk.StringVar(value="只读推理")
+        self.execute_steps = tk.StringVar(value="1")
+        self.ensemble_decay = tk.StringVar(value="0.05")
+        self.rtc_min_steps = tk.StringVar(value="1")
+        self.selection_info = tk.StringVar()
+        self.violation = tk.StringVar(value="目标检查信息将在推理时显示")
+        self.task_ids = []
+        self.active_mode = None
         self.status = tk.StringVar(value="就绪，先检查模型连接")
         self.camera_status = tk.StringVar(value="双相机尚未开启；首次开启后持续采集")
         self.endpoint = tk.StringVar(value="有线连接待检查")
@@ -37,8 +50,8 @@ class TempoApp:
         self.images = {}
         self.action_buttons = []
         self.root.title("Tempo · PiperX 有线推理")
-        self.root.geometry("1180x860")
-        self.root.minsize(1050, 780)
+        self.root.geometry("1280x980")
+        self.root.minsize(1180, 900)
         self.root.configure(bg="#eef2f6")
         style = ttk.Style(root)
         style.theme_use("clam")
@@ -47,10 +60,14 @@ class TempoApp:
         style.configure("Title.TLabel", font=("sans-serif", 23, "bold"))
         style.configure("Muted.TLabel", foreground="#586b82", font=("sans-serif", 10))
         style.configure("TButton", padding=(12, 8), font=("sans-serif", 10))
+        style.configure("Start.TButton", background="#1e7254", foreground="white", font=("sans-serif", 12, "bold"), padding=(20, 10))
         style.configure("Treeview", rowheight=25, font=("sans-serif", 10))
         style.configure("Treeview.Heading", font=("sans-serif", 10, "bold"))
         self._build()
+        self._load_choices()
         self.root.protocol("WM_DELETE_WINDOW", self.close)
+        self.root.bind("<F5>", lambda event: self.start("live"))
+        self.root.bind("<Escape>", lambda event: self.stop())
         self.root.after(50, self._drain)
 
     def _button(self, parent, text, command, **grid):
@@ -67,7 +84,7 @@ class TempoApp:
         title = ttk.Frame(page)
         title.grid(row=0, column=0, sticky="ew")
         ttk.Label(title, text="Tempo / PiperX", style="Title.TLabel").pack(side="left")
-        ttk.Label(title, text="只读推理", foreground="#167554").pack(side="right")
+        ttk.Label(title, textvariable=self.execution_label, foreground="#167554").pack(side="right")
         ttk.Label(page, text="有线模型服务 · 双相机反馈 · 六关节与夹爪预测", style="Muted.TLabel").grid(
             row=1, column=0, sticky="w", pady=(4, 14))
 
@@ -79,37 +96,63 @@ class TempoApp:
             card.grid(row=0, column=column, sticky="ew", padx=(0, 10 if column < 2 else 0))
             ttk.Label(card, textvariable=variable).pack(anchor="w")
 
-        controls = ttk.LabelFrame(page, text="连接与任务", padding=12)
-        controls.grid(row=3, column=0, sticky="ew", pady=(0, 14))
+        controls = ttk.LabelFrame(page, text="任务、推理方式与开始", padding=12)
+        controls.grid(row=3, column=0, sticky="ew", pady=(0, 12))
         controls.columnconfigure(1, weight=1)
         ttk.Label(controls, text="配置文件").grid(row=0, column=0, sticky="w", padx=(0, 10))
         self.config_entry = ttk.Entry(controls, textvariable=self.config_path)
         self.config_entry.grid(row=0, column=1, columnspan=5, sticky="ew")
         self._button(controls, "选择配置", self._select_config, row=0, column=6, padx=(10, 0))
+        selection = ttk.Frame(controls)
+        selection.grid(row=1, column=0, columnspan=7, sticky="ew", pady=(10, 6))
+        ttk.Label(selection, text="任务").pack(side="left", padx=(0, 8))
+        self.task_box = ttk.Combobox(selection, textvariable=self.task_label, state="readonly", width=24)
+        self.task_box.pack(side="left", padx=(0, 16))
+        self.task_box.bind("<<ComboboxSelected>>", self._show_selection)
+        ttk.Label(selection, text="推理方式").pack(side="left", padx=(0, 8))
+        self.mode_box = ttk.Combobox(selection, textvariable=self.mode_label, state="readonly", width=25,
+                                     values=list(MODE_LABELS.values()))
+        self.mode_box.pack(side="left", padx=(0, 16))
+        self.mode_box.bind("<<ComboboxSelected>>", self._show_selection)
+        self.execute_check = ttk.Checkbutton(selection, text="允许实机运动", variable=self.execute, command=self._execution_changed)
+        self.execute_check.pack(side="left", padx=(0, 12))
+        self.home_check = ttk.Checkbutton(selection, text="开始前低速归位", variable=self.home_before, state="disabled")
+        self.home_check.pack(side="left")
+        ttk.Label(controls, textvariable=self.selection_info, style="Muted.TLabel").grid(
+            row=2, column=0, columnspan=7, sticky="w", pady=(0, 8))
         toolbar = ttk.Frame(controls)
-        toolbar.grid(row=1, column=0, columnspan=7, sticky="w", pady=(12, 10))
+        toolbar.grid(row=3, column=0, columnspan=7, sticky="w", pady=(0, 10))
+        self.start_button = ttk.Button(toolbar, text="开始推理 F5", style="Start.TButton", command=lambda: self.start("live"))
+        self.start_button.grid(row=0, column=0, padx=(0, 10))
+        self.action_buttons.append(self.start_button)
+        self.stop_button = ttk.Button(toolbar, text="停止并保持 Esc", command=self.stop, state="disabled")
+        self.stop_button.grid(row=0, column=1, padx=(0, 12))
         for index, (text, mode) in enumerate((("启动模型服务", "service"), ("检查连接", "probe"),
-                                             ("录制数据回放", "replay"), ("现场只读推理", "live"),
-                                             ("开启相机", "camera"), ("释放相机", "release"))):
-            self._button(toolbar, text, lambda mode=mode: self.start(mode), row=0, column=index, padx=(0, 8))
-        self.stop_button = ttk.Button(toolbar, text="停止当前任务", command=self.stop, state="disabled")
-        self.stop_button.grid(row=0, column=6)
-        ttk.Button(toolbar, text="打开日志", command=self.open_logs).grid(row=0, column=7, padx=(8, 0))
-        ttk.Label(controls, text="回放数据").grid(row=2, column=0, sticky="w", padx=(0, 10))
+                                             ("录制数据回放", "replay"), ("开启相机", "camera"), ("释放相机", "release"))):
+            self._button(toolbar, text, lambda mode=mode: self.start(mode), row=0, column=index+2, padx=(0, 6))
+        ttk.Button(toolbar, text="打开日志", command=self.open_logs).grid(row=0, column=7)
+        ttk.Label(controls, text="回放数据").grid(row=4, column=0, sticky="w", padx=(0, 10))
         self.replay_entry = ttk.Entry(controls, textvariable=self.replay_path)
-        self.replay_entry.grid(row=2, column=1, columnspan=5, sticky="ew")
-        self._button(controls, "选择NPZ", self._select_replay, row=2, column=6, padx=(10, 0))
+        self.replay_entry.grid(row=4, column=1, columnspan=5, sticky="ew")
+        self._button(controls, "选择NPZ", self._select_replay, row=4, column=6, padx=(10, 0))
         options = ttk.Frame(controls)
-        options.grid(row=3, column=0, columnspan=7, sticky="w", pady=(10, 0))
-        ttk.Label(options, text="只读时长（秒）").pack(side="left")
-        self.duration_entry = ttk.Spinbox(options, from_=1, to=600, width=6, textvariable=self.duration)
-        self.duration_entry.pack(side="left", padx=(8, 20))
-        ttk.Label(options, text="回放每批帧数").pack(side="left")
-        self.batch_entry = ttk.Spinbox(options, from_=1, to=60, width=6, textvariable=self.batch_size)
-        self.batch_entry.pack(side="left", padx=(8, 20))
-        ttk.Label(options, text="现场采样前先释放其他程序占用的双相机", style="Muted.TLabel").pack(side="left")
+        options.grid(row=5, column=0, columnspan=7, sticky="w", pady=(10, 0))
+        entries = []
+        for label, variable, low, high, width in (
+                ("运行秒数（0持续）", self.duration, 0, 3600, 6),
+                ("原生每块步数", self.execute_steps, 1, 16, 4),
+                ("TE衰减", self.ensemble_decay, 0, 10, 5),
+                ("RTC最少推进", self.rtc_min_steps, 1, 15, 4),
+                ("回放批帧数", self.batch_size, 1, 60, 4)):
+            ttk.Label(options, text=label).pack(side="left")
+            entry = ttk.Spinbox(options, from_=low, to=high, width=width, textvariable=variable)
+            entry.pack(side="left", padx=(6, 14))
+            entries.append(entry)
+        self.duration_entry, self.steps_entry, self.decay_entry, self.rtc_entry, self.batch_entry = entries
         ttk.Label(controls, textvariable=self.camera_status, style="Muted.TLabel").grid(
-            row=4, column=0, columnspan=7, sticky="w", pady=(8, 0))
+            row=6, column=0, columnspan=7, sticky="w", pady=(8, 0))
+        ttk.Label(controls, textvariable=self.violation, style="Muted.TLabel").grid(
+            row=7, column=0, columnspan=7, sticky="w", pady=(4, 0))
 
         views = ttk.Frame(page)
         views.grid(row=4, column=0, sticky="ew", pady=(0, 12))
@@ -121,7 +164,7 @@ class TempoApp:
             label = tk.Label(box, bg="#172b46", fg="#d1dceb", text="等待推理反馈图像", height=12)
             label.pack(fill="both", expand=True)
             self.preview_labels[name] = label
-        state_box = ttk.LabelFrame(views, text="当前反馈 → 首步预测", padding=8)
+        state_box = ttk.LabelFrame(views, text="当前反馈 → 调度目标", padding=8)
         state_box.grid(row=0, column=2, sticky="nsew")
         self.state_table = ttk.Treeview(state_box, columns=("name", "state", "target"), show="headings", height=7)
         for key, title, width in (("name", "维度", 72), ("state", "实测", 82), ("target", "预测", 82)):
@@ -151,12 +194,56 @@ class TempoApp:
         footer.grid(row=6, column=0, sticky="ew", pady=(12, 0))
         ttk.Label(footer, textvariable=self.status).pack(side="left")
         ttk.Label(footer, textvariable=self.progress, style="Muted.TLabel").pack(side="right")
-        self.inputs = [self.config_entry, self.replay_entry, self.duration_entry, self.batch_entry]
+        self.inputs = [self.config_entry, self.replay_entry, *entries, self.execute_check]
+        self.choice_inputs = [self.task_box, self.mode_box]
 
     def _select_config(self):
         path = filedialog.askopenfilename(parent=self.root, title="选择Tempo客户端配置", filetypes=[("YAML配置", "*.yaml *.yml")])
         if path:
             self.config_path.set(path)
+            self._load_choices()
+
+    def _load_choices(self):
+        try:
+            cfg = load_config(self.config_path.get())
+            tasks = cfg["task_catalog"]["tasks"]
+            self.task_ids = [task["id"] for task in tasks]
+            self.task_box.configure(values=[task["label"] for task in tasks])
+            self.task_box.current(self.task_ids.index(cfg["task_catalog"]["default_task"]))
+            self.mode_label.set(MODE_LABELS[cfg["inference"]["mode"]])
+            self.execute_steps.set(str(cfg["inference"]["execute_steps"]))
+            self.ensemble_decay.set(str(cfg["inference"]["ensemble_decay"]))
+            self.rtc_min_steps.set(str(cfg["inference"]["rtc_min_execute_steps"]))
+            self._show_selection()
+        except Exception as error:
+            self.status.set("配置加载失败 " + str(error))
+            self._append(self.status.get())
+
+    def _selected_task(self):
+        index = self.task_box.current()
+        if index == "" or not 0 <= int(index) < len(self.task_ids):
+            raise ValueError("请先选择任务")
+        return self.task_ids[int(index)]
+
+    def _selected_mode(self):
+        for mode, label in MODE_LABELS.items():
+            if self.mode_label.get() == label:
+                return mode
+        raise ValueError("请先选择推理方式")
+
+    def _show_selection(self, event=None):
+        try:
+            cfg = load_config(self.config_path.get())
+            task = next(task for task in cfg["task_catalog"]["tasks"] if task["id"] == self._selected_task())
+            mode = self._selected_mode()
+            detail = "RTC保持10次去噪，延迟超限停止" if mode == "rtc" else "10次去噪 · 16×7绝对关节与夹爪目标"
+            self.selection_info.set(task["prompt"] + "  ·  " + detail)
+        except Exception:
+            self.selection_info.set("请选择配置中的有效任务和推理方式")
+
+    def _execution_changed(self):
+        self.execution_label.set("实机执行待现场确认" if self.execute.get() else "只读推理")
+        self.home_check.configure(state="normal" if self.execute.get() and not self.busy else "disabled")
 
     def _select_replay(self):
         path = filedialog.askopenfilename(parent=self.root, title="选择录制反馈", filetypes=[("NumPy反馈", "*.npz")])
@@ -174,22 +261,45 @@ class TempoApp:
         for widget in [*self.action_buttons, *self.inputs]:
             widget.configure(state="disabled" if busy else "normal")
         self.stop_button.configure(state="normal" if busy else "disabled")
+        for widget in self.choice_inputs:
+            widget.configure(state="disabled" if busy else "readonly")
+        self._execution_changed()
 
     def start(self, mode):
         if self.busy:
             return
         try:
             duration, batch = 10, 4
+            runtime = {}
             if mode != "release":
                 cfg = load_config(self.config_path.get())
                 duration, batch = float(self.duration.get()), int(self.batch_size.get())
-                if not np.isfinite(duration) or not 0 < duration <= 600 or not 1 <= batch <= 60:
-                    raise ValueError("只读时长需为1至600秒，每批反馈需为1至60帧")
+                if not np.isfinite(duration) or not 0 <= duration <= 3600 or not 1 <= batch <= 60:
+                    raise ValueError("时长需为0至3600秒，0表示持续运行；每批反馈需为1至60帧")
                 if mode == "replay" and not Path(self.replay_path.get()).is_file():
                     raise ValueError("请选择有效的NPZ录制反馈文件")
                 self.endpoint.set(f"{cfg['connection']['local_ip']} → {cfg['connection']['host']}:{cfg['connection']['port']}")
+                if mode in ("live", "replay"):
+                    parameters = {"execute_steps": int(self.execute_steps.get()),
+                                  "ensemble_decay": float(self.ensemble_decay.get()),
+                                  "rtc_min_execute_steps": int(self.rtc_min_steps.get())}
+                    cfg["inference"].update(parameters)
+                    cfg = select_runtime(cfg, self._selected_task(), self._selected_mode())
+                    execute = mode == "live" and self.execute.get()
+                    if execute:
+                        home = ("开始前按配置关节角低速归位，速度10%" if self.home_before.get()
+                                else "从现场当前关节位置开始")
+                        runtime_text = "持续运行，使用停止并保持按钮结束" if duration == 0 else f"运行{duration:g}秒后停止保持"
+                        text = (f"任务 {cfg['task']['label']}\n模式 {MODE_LABELS[cfg['inference']['mode']]}\n"
+                                f"{home}\n策略速度 {cfg['safety']['speed_percent']}%\n{runtime_text}\n\n"
+                                "确认现场工作空间与机器人状态后，启动真实机器人运动？")
+                        if not messagebox.askyesno("本轮实机运动确认", text, parent=self.root):
+                            return
+                    runtime = {"task_id": cfg["task"]["id"], "inference_mode": cfg["inference"]["mode"],
+                               "execute": execute, "motion_confirmed": execute,
+                               "home_before": self.home_before.get(), "parameters": parameters}
             self.worker.start(mode, self.config_path.get(), replay_path=self.replay_path.get(),
-                              duration=duration, batch_size=batch)
+                              duration=duration, batch_size=batch, **runtime)
         except Exception as error:
             messagebox.showerror("无法启动任务", str(error), parent=self.root)
             return
@@ -199,10 +309,15 @@ class TempoApp:
         self.latency.set("— ms")
         self.progress.set("0 批次 · 0 反馈帧 · 0 机器人指令")
         self.batch_count = self.frame_count = 0
+        self.target_count = self.command_count = 0
+        self.active_mode = mode
+        self.violation.set("等待模型目标与保护检查")
         if mode == "replay":
             self._clear_previews("等待回放图像")
         self.status.set("正在启动任务")
         self._append(f"开始任务 {mode}")
+        if runtime:
+            self._append(f"任务 {self.task_label.get()} · {self.mode_label.get()} · " + ("现场确认实机执行" if runtime["execute"] else "只读推理"))
 
     def stop(self):
         if self.busy:
@@ -242,26 +357,39 @@ class TempoApp:
             self.batch_count += 1
             self.frame_count += value["feedback_frames"]
             self.latency.set(f"{value['round_trip_ms']:.1f} ms")
-            self.progress.set(f"{self.batch_count} 批次 · {self.frame_count} 反馈帧 · 0 机器人指令")
-            for index in range(7):
-                name = f"J{index + 1} rad" if index < 6 else "夹爪 m"
-                self.state_table.item(str(index), values=(name, f"{value['state'][index]:.4f}", f"{value['actions'][0][index]:.4f}"))
+            self.progress.set(f"{self.batch_count} 批次 · {self.frame_count} 反馈帧 · {getattr(self, 'target_count', 0)} 目标 · {value.get('robot_commands', 0)} 运动指令")
+            if self.active_mode != "live":
+                for index in range(7):
+                    name = f"J{index + 1} rad" if index < 6 else "夹爪 m"
+                    self.state_table.item(str(index), values=(name, f"{value['state'][index]:.4f}", f"{value['actions'][0][index]:.4f}"))
             self.prediction_table.delete(*self.prediction_table.get_children())
             for index, target in enumerate(value["actions"]):
                 self.prediction_table.insert("", "end", values=(index + 1, *[f"{x:.5f}" for x in target]))
             self._append(f"批次 {self.batch_count}，{value['feedback_frames']} 帧反馈，往返 {value['round_trip_ms']:.1f} ms")
+        elif kind == "control":
+            self.target_count += 1
+            self.command_count = value["robot_commands"]
+            self.progress.set(f"{self.batch_count} 批次 · {self.frame_count} 反馈帧 · {self.target_count} 目标 · {self.command_count} 运动指令")
+            for index in range(7):
+                name = f"J{index + 1} rad" if index < 6 else "夹爪 m"
+                self.state_table.item(str(index), values=(name, f"{value['state'][index]:.4f}", f"{value['action'][index]:.4f}"))
+            self.violation.set(("只读目标检查 " + value["violation"]) if value["violation"] else
+                               f"目标检查通过 · 观测帧龄 {value['age_s']:.3f} 秒 · " + ("实机下发" if value["executed"] else "只读规划"))
         elif kind == "done":
             self._set_busy(False)
             status = {"completed": "任务完成", "cancelled": "任务已停止", "error": "任务失败"}[value["outcome"]]
             self.status.set(status)
             self._append(status + (" · " + value["error"] if "error" in value else ""))
             self._append(f"日志保存于 {value['log_dir']}")
+            if self.active_mode == "live":
+                self.progress.set(f"{value.get('batches', 0)} 批次 · {value.get('feedback_frames', 0)} 反馈帧 · {value.get('planned_targets', 0)} 目标 · {value.get('robot_commands', 0)} 运动指令")
+            if value.get("robot_close_error"):
+                self._append("机器人停止清理异常 " + value["robot_close_error"])
             if self.closing:
                 if value.get("mode") != "release":
                     self.root.after(20, self._release_for_exit)
                 elif value["outcome"] == "completed":
-                    self.closed = True
-                    self.root.destroy()
+                    self._destroy()
                 else:
                     self.closing = False
                     self.status.set("释放相机失败，请检查日志后重试退出")
@@ -297,6 +425,14 @@ class TempoApp:
         self.worker.start("release", self.config_path.get())
         self._set_busy(True)
         self.status.set("正在关闭相机并退出")
+
+    def _destroy(self):
+        # Tk定时回调和图像归主线程清理，避免退出后回调或跨线程回收解释器。
+        for timer in self.root.tk.splitlist(self.root.tk.call("after", "info")):
+            self.root.after_cancel(timer)
+        self.images.clear()
+        self.closed = True
+        self.root.destroy()
 
 
 def main():

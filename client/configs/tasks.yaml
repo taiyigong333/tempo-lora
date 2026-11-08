@@ -1,0 +1,5 @@
+default_task: rotating_red_square
+tasks:
+  - id: rotating_red_square
+    label: 抓取旋转红色方块
+    prompt: grab the rotating red square

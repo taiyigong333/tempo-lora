@@ -101,7 +101,8 @@
     "denoise_steps": 10,
     "execute_steps": 1,
     "host": "127.0.0.1",
-    "port": 8000
+    "port": 8000,
+    "rtc_max_guidance": 10.0
   },
   "wandb": {
     "enabled": true,

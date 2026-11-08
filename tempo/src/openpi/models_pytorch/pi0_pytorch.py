@@ -650,7 +650,8 @@ class PI0Pytorch(nn.Module):
         return flow_loss
 
     @torch.no_grad()
-    def sample_actions(self, device, observation, noise=None, num_steps=10) -> Tensor:
+    def sample_actions(self, device, observation, noise=None, num_steps=10,
+                       rtc_prefix=None, rtc_weights=None, rtc_max_guidance=10.0) -> Tensor:
         """Do a full inference forward and compute the action (batch_size x num_steps x num_motors)"""
         bsize = observation.state.shape[0]
         if noise is None:
@@ -684,17 +685,28 @@ class PI0Pytorch(nn.Module):
         dt = torch.tensor(dt, dtype=torch.float32, device=device)
 
         x_t = noise
+        guided = rtc_prefix is not None
+        if guided:
+            from openpi.tempo_lora.rtc import guided_velocity
+            rtc_prefix = torch.as_tensor(rtc_prefix, device=device, dtype=torch.float32)
+            rtc_weights = torch.as_tensor(rtc_weights, device=device, dtype=torch.float32)
+            expected = (bsize, self.config.action_horizon, self.config.action_dim)
+            if (tuple(rtc_prefix.shape) != expected or tuple(rtc_weights.shape) != expected
+                    or not torch.isfinite(rtc_prefix).all() or not torch.isfinite(rtc_weights).all()
+                    or torch.any(rtc_weights < 0) or torch.any(rtc_weights > 1)
+                    or not math.isfinite(rtc_max_guidance) or rtc_max_guidance <= 0):
+                raise ValueError("RTC前缀、权重或引导上限不合法")
         time = torch.tensor(1.0, dtype=torch.float32, device=device)
         while time >= -dt / 2:
             expanded_time = time.expand(bsize)
-            v_t = self.denoise_step(
-                state,
-                prefix_pad_masks,
-                past_key_values,
-                x_t,
-                expanded_time,
-                action_history=action_history,
-            )
+            def velocity(value):
+                return self.denoise_step(state, prefix_pad_masks, past_key_values, value,
+                                         expanded_time, action_history=action_history)
+            if guided:
+                decode = (lambda value: self._decode_ut(value, device)) if self.predict_ut else (lambda value: value)
+                v_t = guided_velocity(velocity, decode, x_t, time, rtc_prefix, rtc_weights, rtc_max_guidance)
+            else:
+                v_t = velocity(x_t)
 
             # Euler step - use new tensor assignment instead of in-place operation
             x_t = x_t + dt * v_t

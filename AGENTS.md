@@ -16,7 +16,9 @@
 - 执行提速已从完整step500安全生效，先读 docs/训练性能优化.md 和 trained_model/runtime/performance_20261108/transition.json。正式执行compact_prefix=true、checkpoint_joint_forward=false、joint_gradient_checkpointing=true，约3.18秒/步；同一run与W&B继续。实际配置trained_model/runtime/performance_20261108/config.json，切换程序已完成，勿重跑transition.py或从头训练。
 - 正式10000步训练与32样本离线评估已完成，先读 docs/训练完成报告.md 和 trained_model/runtime/final_verification_20261108.json。最终模型/优化器/scheduler均10000、W&B finished，禁止例行巡检重新启动训练；后续新实验需按用户新要求执行。
 - PiperX有线客户端部署在 `/home/cv/gcj/project/baseline_fast/tempo-lora`，先读 `docs/PiperX客户端部署.md` 和验证JSON。客户端独立环境在client/.venv，现场已有其他GUI，访问相机前核对占用。
-- Tempo在线服务会话tempo_lora_inference，192.168.50.2:8000，最终10000步模型。当前客户端只读，输出绝对关节rad与夹爪m，实机执行需用户进一步明确要求。
+- Tempo在线服务会话tempo_lora_inference，192.168.50.2:8000，最终10000步模型。客户端默认只读，输出绝对关节rad与夹爪m。用户已要求同时提供只读和实机执行，真实运动每轮由GUI现场确认，自动验证保持只读。
 - PiperX图形入口为根目录run_gui.sh，GUI后台任务位于client/src/tempo_client/session.py。用户已明确授权完整项目推送至公开tempo-lora仓库，后续相关提交可继续同步；GUI测试应使用独立显示环境和录制反馈。
 - 相机由SessionWorker跨轮持有，首次开启后持续采集与覆盖旧帧；停止推理保留视频流，退出或显式释放才关闭。参考OpenPI持续相机生命周期，真实设备被占用时使用合成相机验证，不抢占其他客户端。
 - 相机首次开启允许CameraFrameError在原启动时限内等待预热，运行期snapshot继续立即拒绝陈旧/不同步帧。设备忙先核查占用程序状态，切换前正常释放；真实相机恢复记录见docs/交接.md的最新段落。
+
+- 任务、三模式和运动保护已部署，先读docs/推理控制补全.md。F5开始、Esc停止保持，相机跨轮常驻。用户确认RTC保持10次去噪、延迟超限停止。真实原生只读通过，TE/RTC目前会因缓冲耗尽或观测过期停止，不宣称持续异步或真机抓取验证成功。客户端53项、服务端28项回归通过。

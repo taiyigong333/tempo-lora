@@ -1,0 +1,6 @@
+mode: tempo
+execute_steps: 1 # 原生同步沿用最终模型配置，每次执行前N步再重算
+ensemble_decay: 0.05 # 同一目标时刻，新预测按年龄指数衰减后加权
+rtc_min_execute_steps: 1 # 16步窗口内尽早请求下一块，仍校验剩余前缀覆盖延迟
+rtc_delay_margin_steps: 1
+first_action_timeout_s: 15

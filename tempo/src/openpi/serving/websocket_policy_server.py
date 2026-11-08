@@ -24,11 +24,14 @@ class WebsocketPolicyServer:
         host: str = "0.0.0.0",
         port: int | None = None,
         metadata: dict | None = None,
+        single_client: bool = False,
     ) -> None:
         self._policy = policy
         self._host = host
         self._port = port
         self._metadata = metadata or {}
+        self._single_client = single_client
+        self._inference_owner = None
         logging.getLogger("websockets.server").setLevel(logging.INFO)
 
     def serve_forever(self) -> None:
@@ -58,6 +61,15 @@ class WebsocketPolicyServer:
                 start_time = time.monotonic()
                 obs = msgpack_numpy.unpackb(await websocket.recv())
 
+                # TEMPO在线记忆属于整条连接，防止并发客户端相互重置episode。
+                if self._single_client:
+                    if self._inference_owner is not None and self._inference_owner is not websocket:
+                        raise RuntimeError("已有客户端占用推理会话，请先停止其推理任务")
+                    self._inference_owner = websocket
+                    if obs.get("operation") == "claim":
+                        await websocket.send(packer.pack({"claimed": True}))
+                        continue
+
                 infer_time = time.monotonic()
                 action = self._policy.infer(obs)
                 infer_time = time.monotonic() - infer_time
@@ -73,9 +85,13 @@ class WebsocketPolicyServer:
                 prev_total_time = time.monotonic() - start_time
 
             except websockets.ConnectionClosed:
+                if self._inference_owner is websocket:
+                    self._inference_owner = None
                 logger.info(f"Connection from {websocket.remote_address} closed")
                 break
             except Exception:
+                if self._inference_owner is websocket:
+                    self._inference_owner = None
                 await websocket.send(traceback.format_exc())
                 await websocket.close(
                     code=websockets.frames.CloseCode.INTERNAL_ERROR,

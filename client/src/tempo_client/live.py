@@ -2,6 +2,7 @@
 
 from collections import deque
 import importlib
+import contextlib
 from pathlib import Path
 import queue
 import sys
@@ -29,13 +30,14 @@ def interpolate(samples, stamp, max_gap):
 
 
 class LiveFeedback:
-    def __init__(self, cfg, *, cameras=None):
+    def __init__(self, cfg, *, cameras=None, robot=None):
         self.cfg = cfg["live"]
         self.fps = cfg["model"]["fps"]
         self.stop = threading.Event()
         self.lock = threading.Lock()
         self.error = None
         self.arm = None
+        self.robot = robot
         self.threads = []
         self.joints, self.gripper = deque(maxlen=180), deque(maxlen=180)
         self.cameras = cameras
@@ -56,6 +58,9 @@ class LiveFeedback:
         thread.start()
 
     def _connect_arm(self):
+        if self.robot is not None:
+            self.arm, self.effector = self.robot.arm, self.robot.gripper
+            return
         sdk_path = Path(self.cfg["sdk_path"]).resolve()
         sys.path.insert(0, str(sdk_path))
         sdk = importlib.import_module("pyAgxArm")
@@ -69,7 +74,8 @@ class LiveFeedback:
 
     def _sample_arm(self):
         while not self.stop.is_set():
-            values = (self.arm.get_joint_angles(), self.effector.get_gripper_status())
+            with self.robot.lock if self.robot is not None else contextlib.nullcontext():
+                values = (self.arm.get_joint_angles(), self.effector.get_gripper_status())
             now = time.time()
             with self.lock:
                 for index, (history, feedback) in enumerate(zip((self.joints, self.gripper), values)):
@@ -116,7 +122,7 @@ class LiveFeedback:
             index += 1
             self.stop.wait(max(0, origin + index / self.fps - time.time()))
 
-    def take(self):
+    def take(self, *, max_frames=None):
         while True:
             if self.error is not None:
                 raise RuntimeError(str(self.error)) from self.error
@@ -126,7 +132,8 @@ class LiveFeedback:
             except queue.Empty:
                 if self.stop.is_set():
                     raise RuntimeError("反馈采样已停止")
-        while len(frames) < self.cfg["max_batch_frames"]:
+        maximum = self.cfg["max_batch_frames"] if max_frames is None else max_frames
+        while len(frames) < maximum:
             try:
                 frames.append(self.pending.get_nowait())
             except queue.Empty:
@@ -157,7 +164,8 @@ class LiveFeedback:
                 self.cameras.start()
             # 每轮只接收本轮CAN就绪之后的新图，持续视频流不携带上一轮历史。
             self.cameras.wait_ready(self.stop, after=time.time())
-            self._start(self._produce, time.time())
+            self.origin_wall = time.time()
+            self._start(self._produce, self.origin_wall)
             return self
         except BaseException:
             self.__exit__()
@@ -168,7 +176,7 @@ class LiveFeedback:
         for thread in self.threads:
             thread.join(timeout=2)
         try:
-            if self.arm is not None:
+            if self.arm is not None and self.robot is None:
                 self.arm.disconnect()
         finally:
             if self.owns_cameras and self.cameras is not None:
