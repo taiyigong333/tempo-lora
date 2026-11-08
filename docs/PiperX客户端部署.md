@@ -64,7 +64,7 @@ tail -f trained_model/logs/serve_wired.log
 
 ## Git 维护
 
-GitHub 初始为空仓库。PiperX 从 4090 的完整 main 历史创建工作副本，保留原项目历史。origin fetch 使用用户给定 HTTPS URL，push 使用 PiperX 已有 GitHub SSH 身份。`deployment-source` 指向 4090 的有线 SSH 路径，可用于两端同步。
+GitHub 初始为空仓库，已确认可见性为 public。自动审批因内部路径、相机序列号和历史记录的公开外发而拒绝推送，当前完整提交仅保存在两台服务器，等待用户明确授权推送。PiperX 从 4090 的完整 main 历史创建工作副本，保留原项目历史。origin fetch 使用用户给定 HTTPS URL，push 使用 PiperX 已有 GitHub SSH 身份。`deployment-source` 指向 4090 的有线 SSH 路径，可用于两端同步。
 
 ```bash
 git fetch origin
