@@ -11,6 +11,7 @@ import time
 import numpy as np
 
 from tempo_client.cli import report
+from tempo_client.delay import DelayEstimator
 
 
 @dataclass
@@ -36,7 +37,7 @@ class Plans:
             self.plans = [value for value in self.plans if value.start + self.horizon > plan.start]
             self.plans.append(Plan(plan.start, actions.copy(), plan.observed))
 
-    def action(self, tick, now, max_age):
+    def action(self, tick, now, max_age, *, include_sources=False):
         with self.lock:
             self.plans = [value for value in self.plans if value.start + self.horizon > tick]
             choices = [value for value in self.plans if value.start <= tick < value.start + self.horizon
@@ -44,13 +45,20 @@ class Plans:
             if not choices:
                 return None
             if self.mode != "temporal_ensemble":
-                plan = choices[-1]
-                return plan.actions[tick - plan.start].copy(), plan.observed
-            weights = np.exp(-self.decay * np.asarray([tick - value.start for value in choices]))
+                choices = choices[-1:]
+            ages = np.asarray([tick - value.start for value in choices])
+            weights = np.exp(-self.decay * (ages - ages.min()))
             weights /= weights.sum()
             targets = np.stack([value.actions[tick - value.start] for value in choices])
             # 六维是关节角，按训练的绝对关节坐标加权，夹爪同样采用绝对米制。
-            return (targets * weights[:, None]).sum(0).astype(np.float32), min(value.observed for value in choices)
+            result = ((targets * weights[:, None]).sum(0).astype(np.float32),
+                      min(value.observed for value in choices))
+            if include_sources:
+                sources = [{"plan_start_tick": value.start, "observed": value.observed,
+                            "prediction_step": tick - value.start + 1, "weight": float(weight)}
+                           for value, weight in zip(choices, weights)]
+                return result[0], result[1], sources
+            return result
 
     def prefix(self, tick):
         with self.lock:
@@ -74,6 +82,7 @@ class InferenceRun:
         self.mode = self.inference["mode"]
         self.fps = cfg["model"]["fps"]
         self.horizon = cfg["model"]["action_horizon"]
+        self.delay_estimator = DelayEstimator(self.inference, self.fps)
         self.plans = Plans(self.mode, self.horizon, self.inference["ensemble_decay"])
         self.stop = threading.Event()
         self.errors = queue.Queue()
@@ -81,10 +90,18 @@ class InferenceRun:
         self.first_deadline = time.monotonic() + self.inference["first_action_timeout_s"]
         self.origin_wall = source.origin_wall
         self.origin_mono = time.monotonic() - (time.time() - self.origin_wall)
-        self.summary.update(planned_targets=0, safety_violations=0, rtc_guided_requests=0)
+        self.summary.update(planned_targets=0, safety_violations=0, rtc_guided_requests=0,
+                            prediction_step_weight_sum={})
 
     def tick(self):
         return math.floor((time.monotonic() - self.origin_mono) * self.fps)
+
+    def action_start(self, observed):
+        # action[t]已经对应state[t+1]，首目标固定在观测后一帧，所有模式共享这个锚点。
+        return round((observed - self.origin_wall) * self.fps) + 1
+
+    def _wait_for_tick(self, tick):
+        self.stop.wait(max(0, self.origin_mono + tick / self.fps - time.monotonic()))
 
     def _active(self):
         return not self.stop.is_set() and not self.cancel.is_set()
@@ -120,7 +137,14 @@ class InferenceRun:
         record = report(result, frames)
         record.update(state=frames[-1]["state"].tolist(), mode=self.mode,
                       task_id=self.cfg["task"]["id"], rtc_prefix_length=result.get("rtc_prefix_length", 0),
-                      rtc_delay=delay, robot_commands=self.robot.sent_commands)
+                      rtc_delay=delay, robot_commands=self.robot.sent_commands,
+                      rtc_delay_estimator=self.delay_estimator.method,
+                      rtc_latency_estimate_ms=self.delay_estimator.seconds * 1000)
+        anchor = self.action_start(frames[-1]["timestamp"])
+        record.update(action_start_tick=anchor, received_timestamp=time.time(),
+                      first_future_prediction_step=max(1, self.tick() + 2 - anchor),
+                      action_target_timestamps=[self.origin_wall + (anchor + k) / self.fps
+                                                for k in range(self.horizon)])
         self.predictions.write(json.dumps(record, ensure_ascii=False) + "\n")
         self.predictions.flush()
         self.summary["batches"] += 1
@@ -130,7 +154,6 @@ class InferenceRun:
         return result, frames[-1]["timestamp"]
 
     def _async(self):
-        latency = 0.
         try:
             while self._active():
                 previous_start = self.plans.latest_start()
@@ -140,24 +163,23 @@ class InferenceRun:
                 if not self._active():
                     return
                 frames = self.source.take(max_frames=self.cfg["live"]["max_pending_frames"])
-                anchor = round((frames[-1]["timestamp"] - self.origin_wall) * self.fps) + 1
+                anchor = self.action_start(frames[-1]["timestamp"])
                 prefix, delay = None, 0
                 if self.mode == "rtc" and previous_start is not None:
                     prefix = self.plans.prefix(anchor)
-                    delay = max(0, self.tick() - anchor) + math.ceil(latency * self.fps) + self.inference["rtc_delay_margin_steps"]
+                    delay = max(0, self.tick() + 1 - anchor) + math.ceil(self.delay_estimator.seconds * self.fps) + self.inference["rtc_delay_margin_steps"]
                     if prefix is None or len(prefix) < delay:
                         raise RuntimeError("RTC剩余前缀无法覆盖实测推理延迟，请检查GPU负载与推理参数")
                 result, observed = self._request(prefix, delay, frames)
-                latency = max(result["round_trip_ms"] / 1000, latency * .95)
-                start = self.tick() + 1 if self.mode == "rtc" and previous_start is None else anchor
-                if self.tick() >= start + self.horizon:
+                self.delay_estimator.update(result["round_trip_ms"] / 1000)
+                if self.tick() + 1 >= anchor + self.horizon:
                     raise RuntimeError("异步结果已超出模型动作窗口")
-                self.plans.add(Plan(start, result["actions"], observed))
+                self.plans.add(Plan(anchor, result["actions"], observed))
         except Exception as error:
             if self._active():
                 self._fail(error)
 
-    def _apply(self, action, observed, tick, stream):
+    def _apply(self, action, observed, tick, stream, *, sources=()):
         if not self._active():
             raise InterruptedError("目标调度已停止")
         age = time.time() - observed
@@ -172,15 +194,30 @@ class InferenceRun:
                 raise
             violation = str(error)
             self.summary["safety_violations"] += 1
+        # 读取反馈和FK检查也消耗时间，下发前重新核验时效，日志记录实际调度误差。
+        dispatched = time.time()
+        age = dispatched - observed
+        if not 0 <= age <= self.safety["action_max_age_s"]:
+            raise RuntimeError(f"动作来源观测过期，帧龄{age:.3f}秒")
+        lag = time.monotonic() - (self.origin_mono + tick / self.fps)
+        if lag > self.safety["max_control_lag_s"]:
+            raise RuntimeError("控制线程超过调度延迟上限")
         if self.execute:
             self.robot.send_action(action, self.cancel)
+        dispatch_end = time.time()
         if self.first_action_at is None:
             self.first_action_at = time.monotonic()
         self.summary["planned_targets"] += 1
         self.summary["robot_commands"] = self.robot.sent_commands
-        record = {"tick": tick, "observed": observed, "time": time.time(), "age_s": age,
+        for source in sources:
+            step = str(source["prediction_step"])
+            counts = self.summary["prediction_step_weight_sum"]
+            counts[step] = counts.get(step, 0.) + source["weight"]
+        record = {"tick": tick, "observed": observed, "time": dispatched, "age_s": age,
                   "action": np.asarray(action).tolist(), "state": current.tolist(), "executed": self.execute,
-                  "mode": self.mode, "violation": violation, "robot_commands": self.robot.sent_commands}
+                  "mode": self.mode, "violation": violation, "robot_commands": self.robot.sent_commands,
+                  "target_timestamp": self.origin_wall + tick / self.fps,
+                  "schedule_lag_s": lag, "dispatch_end_timestamp": dispatch_end, "sources": sources}
         stream.write(json.dumps(record, ensure_ascii=False) + "\n")
         stream.flush()
         self.events.put(("control", record))
@@ -196,35 +233,52 @@ class InferenceRun:
         try:
             path = Path(self.summary["log_dir"]) / "controls.jsonl"
             with path.open("w") as stream:
-                next_tick = time.monotonic()
+                next_tick = self.tick() + 1
                 while self._active():
                     if self.first_action_at is not None and time.monotonic() - self.first_action_at >= duration:
                         break
                     if self.mode == "tempo":
                         result, observed = self._request()
-                        next_tick = time.monotonic()
-                        for action in result["actions"][:self.inference["execute_steps"]]:
+                        anchor = self.action_start(observed)
+                        self.plans.add(Plan(anchor, result["actions"], observed))
+                        next_tick = self.tick() + 1
+                        if next_tick >= anchor + self.horizon:
+                            raise RuntimeError("原生结果已超出模型动作窗口，动作来源观测过期")
+                        for executed in range(self.inference["execute_steps"]):
                             if not self._active():
                                 break
                             if self.first_action_at is not None and time.monotonic() - self.first_action_at >= duration:
                                 break
-                            self._apply(action, observed, self.tick(), stream)
-                            next_tick += 1 / self.fps
-                            self.stop.wait(max(0, next_tick - time.monotonic()))
+                            next_tick = max(next_tick, self.tick())
+                            self._wait_for_tick(next_tick)
+                            if not self._active():
+                                break
+                            selected = self.plans.action(next_tick, time.time(), self.safety["action_max_age_s"],
+                                                         include_sources=True)
+                            if selected is None:
+                                if executed:
+                                    # 当前块有效尾部已耗尽，提前重算，不能把过期目标继续播放。
+                                    break
+                                raise RuntimeError("原生动作来源观测过期或动作窗口耗尽")
+                            action, observed, sources = selected
+                            self._apply(action, observed, next_tick, stream, sources=sources)
+                            next_tick += 1
                     else:
-                        selected = self.plans.action(self.tick(), time.time(), self.safety["action_max_age_s"])
+                        next_tick = max(next_tick, self.tick())
+                        self._wait_for_tick(next_tick)
+                        if not self._active():
+                            break
+                        selected = self.plans.action(next_tick, time.time(), self.safety["action_max_age_s"],
+                                                     include_sources=True)
                         if selected is None:
                             if self.first_action_at is not None:
                                 raise RuntimeError("异步动作缓冲耗尽或观测过期")
                             self.stop.wait(.002)
-                            next_tick = time.monotonic()
+                            next_tick = self.tick() + 1
                             continue
-                        self._apply(*selected, self.tick(), stream)
-                        next_tick += 1 / self.fps
-                        remaining = next_tick - time.monotonic()
-                        if remaining < -self.safety["max_control_lag_s"]:
-                            raise RuntimeError("控制线程超过调度延迟上限")
-                        self.stop.wait(max(0, remaining))
+                        action, observed, sources = selected
+                        self._apply(action, observed, next_tick, stream, sources=sources)
+                        next_tick += 1
             if not self.errors.empty():
                 raise self.errors.get()
         except Exception as error:

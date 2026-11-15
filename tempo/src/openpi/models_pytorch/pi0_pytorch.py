@@ -367,13 +367,17 @@ class PI0Pytorch(nn.Module):
             def image_embed_func(x, num_frames=k):
                 return self.paligemma_with_expert.embed_image(x, num_frames=num_frames)
 
-            if self.config.lora_enabled and not bool(img_mask.any()):
+            if (self.config.lora_enabled or getattr(self.config, "skip_missing_cameras", False)) and not bool(img_mask.any()):
                 # 整批缺失相机的 tokens 始终被 mask，跳过该路编码以节约真实单臂训练算力。
                 vision = self.paligemma_with_expert.paligemma.config.vision_config
                 count = (vision.image_size // vision.patch_size) ** 2
+                missing_dtype = self.action_in_proj.weight.dtype
+                if getattr(self.config, "skip_missing_cameras", False) and embs:
+                    # 完整微调的视觉输出是BF16，空槽保持相同dtype以避免拼接改变精度。
+                    missing_dtype = embs[0].dtype
                 img_emb = torch.zeros(img.shape[0], count,
                                       self.paligemma_with_expert.paligemma.config.text_config.hidden_size,
-                                      device=img.device, dtype=self.action_in_proj.weight.dtype)
+                                      device=img.device, dtype=missing_dtype)
             else:
                 img_emb = self._apply_checkpoint(image_embed_func, img_in)
 

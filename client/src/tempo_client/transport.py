@@ -48,6 +48,10 @@ class Client:
             if (self.metadata.get("native_action_dim") != cfg["model"]["action_dim"]
                     or self.metadata.get("feedback_fps") != cfg["model"]["fps"]):
                 raise ValueError("服务器动作维度或反馈帧率不匹配")
+            # 论文参数配置显式核验采样方式，防止连接到同权重的其他推理配置。
+            for key in ('inference_profile', 'denoise_steps', 'rtc_max_guidance'):
+                if key in cfg['model'] and self.metadata.get(key) != cfg['model'][key]:
+                    raise ValueError(f'服务器推理参数不匹配 {key}: {self.metadata.get(key)}')
             self.local_ip = raw.getsockname()[0]
         except BaseException:
             self.close()

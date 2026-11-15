@@ -1,0 +1,11 @@
+# RTC原论文n=5、beta=5、延迟窗口b=10，控制适配30Hz/30步模型。
+mode: rtc
+execute_steps: 1
+ensemble_decay: 0.05
+# 本地0.5秒时效预算下采用快速重规划，实际推进受推理延迟决定。
+rtc_min_execute_steps: 1
+rtc_delay_estimator: window_max
+rtc_delay_buffer_size: 10
+rtc_initial_delay_steps: 8
+rtc_delay_margin_steps: 1
+first_action_timeout_s: 15

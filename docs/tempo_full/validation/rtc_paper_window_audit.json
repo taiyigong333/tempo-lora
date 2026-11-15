@@ -1,0 +1,15 @@
+{
+  "batches": 388,
+  "window_size": 10,
+  "initial_delay_steps": 8,
+  "delay_margin_steps": 1,
+  "all_estimates_match_window_max": true,
+  "delay_steps_histogram": {
+    "0": 1,
+    "9": 9,
+    "6": 324,
+    "7": 54
+  },
+  "maximum_action_age_s": 0.36742210388183594,
+  "robot_commands": 0
+}

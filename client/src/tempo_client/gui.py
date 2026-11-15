@@ -183,7 +183,7 @@ class TempoApp:
         self.log.pack(fill="both", expand=True)
         self.log.configure(state="disabled")
         predictions = ttk.Frame(tabs)
-        tabs.add(predictions, text="完整16步预测")
+        tabs.add(predictions, text="完整动作块预测")
         columns = ["step", *[f"j{i}" for i in range(1, 7)], "gripper"]
         self.prediction_table = ttk.Treeview(predictions, columns=columns, show="headings", height=6)
         for key in columns:
@@ -211,6 +211,10 @@ class TempoApp:
             self.task_box.configure(values=[task["label"] for task in tasks])
             self.task_box.current(self.task_ids.index(cfg["task_catalog"]["default_task"]))
             self.mode_label.set(MODE_LABELS[cfg["inference"]["mode"]])
+            # 模型窗口由握手配置决定，切换16/30步模型时同步控件范围。
+            horizon = cfg["model"]["action_horizon"]
+            self.steps_entry.configure(to=horizon)
+            self.rtc_entry.configure(to=max(1, horizon - 1))
             self.execute_steps.set(str(cfg["inference"]["execute_steps"]))
             self.ensemble_decay.set(str(cfg["inference"]["ensemble_decay"]))
             self.rtc_min_steps.set(str(cfg["inference"]["rtc_min_execute_steps"]))
@@ -236,7 +240,9 @@ class TempoApp:
             cfg = load_config(self.config_path.get())
             task = next(task for task in cfg["task_catalog"]["tasks"] if task["id"] == self._selected_task())
             mode = self._selected_mode()
-            detail = "RTC保持10次去噪，延迟超限停止" if mode == "rtc" else "10次去噪 · 16×7绝对关节与夹爪目标"
+            denoise_steps = cfg['model'].get('denoise_steps', 10)
+            detail = (f"RTC · {denoise_steps}次去噪，延迟超限停止" if mode == "rtc"
+                      else f"{denoise_steps}次去噪 · {cfg['model']['action_horizon']}×{cfg['model']['action_dim']}绝对关节与夹爪目标")
             self.selection_info.set(task["prompt"] + "  ·  " + detail)
         except Exception:
             self.selection_info.set("请选择配置中的有效任务和推理方式")

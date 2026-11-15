@@ -21,8 +21,9 @@ from tools.precompute_sam2_tokens import read_video_rgb
 
 
 class SAM2Stream:
-    def __init__(self, model, device="cuda", precision="bfloat16", *, compile_model=False):
+    def __init__(self, model, device="cuda", precision="bfloat16", *, compile_model=False, latest_features_only=False):
         self.model, self.device, self.precision = model, device, precision
+        self.latest_features_only = latest_features_only
         self.model.requires_grad_(False)
         self.executor = None
         self.cuda_stream = None
@@ -37,7 +38,7 @@ class SAM2Stream:
         self.outputs = {"cond_frame_outputs": {}, "non_cond_frame_outputs": {}}
 
     @torch.no_grad()
-    def step(self, rgb, *, return_tensor=False):
+    def step(self, rgb, *, return_tensor=False, return_features=True):
         import cv2
 
         x = torch.from_numpy(cv2.resize(rgb, (1024, 1024))).permute(2, 0, 1)[None]
@@ -48,11 +49,15 @@ class SAM2Stream:
         with context:
             features = self.model.forward_image(x)
             _, vf, vp, sizes = self.model._prepare_backbone_features(features)
-            pix = self.model._prepare_memory_conditioned_features(
-                frame_idx=self.frame, is_init_cond_frame=self.frame == 0,
-                current_vision_feats=vf[-1:], current_vision_pos_embeds=vp[-1:], feat_sizes=sizes[-1:],
-                output_dict=self.outputs, num_frames=self.frame + 1, track_in_reverse=False)
-            latent = F.adaptive_avg_pool2d(pix, (8, 8))[0].float()
+            latent = None
+            if return_features:
+                # 记忆编码仅依赖当前骨干特征与全帧mask，中间帧的读出不参与后续记忆。
+                # 每帧仍写入记忆，仅在需要融合的最后一帧执行记忆注意力读出。
+                pix = self.model._prepare_memory_conditioned_features(
+                    frame_idx=self.frame, is_init_cond_frame=self.frame == 0,
+                    current_vision_feats=vf[-1:], current_vision_pos_embeds=vp[-1:], feat_sizes=sizes[-1:],
+                    output_dict=self.outputs, num_frames=self.frame + 1, track_in_reverse=False)
+                latent = F.adaptive_avg_pool2d(pix, (8, 8))[0].float()
             memory, position = self.model._encode_new_memory(
                 current_vision_feats=vf, feat_sizes=sizes,
                 pred_masks_high_res=_full_frame_mask(self.model.image_size, self.device, dtype),
@@ -69,6 +74,8 @@ class SAM2Stream:
             if old < self.frame - keep:
                 del self.outputs["non_cond_frame_outputs"][old]
         self.frame += 1
+        if not return_features:
+            return None
         return latent if return_tensor else latent.cpu().numpy()
 
     def encode_async(self, images):
@@ -80,8 +87,11 @@ class SAM2Stream:
 
         def encode():
             with torch.cuda.stream(self.cuda_stream):
-                for rgb in images:
-                    latent = self.step(rgb, return_tensor=True)
+                for index, rgb in enumerate(images):
+                    if self.latest_features_only and index < len(images) - 1:
+                        self.step(rgb, return_tensor=True, return_features=False)
+                    else:
+                        latent = self.step(rgb, return_tensor=True)
                 tokens = latent.permute(1, 2, 0).reshape(1, 64, 256)
                 ready = torch.cuda.Event()
                 ready.record(self.cuda_stream)

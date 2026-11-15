@@ -143,6 +143,10 @@ class SessionWorker:
         script = (f"set -eu\ncd {project}\n"
                   f"if ! tmux has-session -t ={session} 2>/dev/null; then\n"
                   f"  tmux new-session -d -s {session} -c {project} {launch}\nfi\n")
+        if 'profile' in service:
+            # 同一GPU按配置切换单个TEMPO服务，配置参数由服务端白名单解析。
+            profile = shlex.quote(service['profile'])
+            script = f"set -eu\ncd {project}\nbash trained_model/scripts/start_service.sh {profile}\n"
         self.events.put(("status", "正在通过有线SSH检查并启动模型服务"))
         # SSH仅管理Tempo自己的tmux会话，模型加载在远端后台继续。
         with subprocess.Popen(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",

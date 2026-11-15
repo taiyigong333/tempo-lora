@@ -26,3 +26,7 @@
 - 软件限位已按用户明确确认小幅放宽，具体值见client/configs/safety.yaml和docs/推理控制补全.md末节。软件Esc、越界与延迟停止均位置保持且不发送失能。反馈失效保留故障急停，禁止对物理急停或控制器外部失能自动恢复。客户端59项回归通过，原生也可能因0.5秒动作帧龄偶发超时。
 
 - 最新延迟修复见docs/推理延迟故障修复.md。当前正式8000启用compile_inference与parallel_sam，SAM2独立CUDA流和双相机视觉编码并行，融合等待当前批特征。真实原生只读20秒、TE只读60秒通过，RTC仍触发0.5秒时效保护。CAN可变反馈缓存竞争已修复，仍保留0.1秒反馈保护。当前回归客户端63项、服务端37项。编译后的数值差异已记录，真实运动每轮由GUI现场确认。
+
+- 全量微调与RTC论文参数部署见docs/tempo_full/README.md及交接.md。当前全量服务192.168.50.2:8002，rtc_paper配置5次去噪、beta5、10次延迟窗口，30Hz与30步输出。
+- 全量部署源码共用tempo/src，安装入口trained_model/scripts/install_tempo_full.sh恢复独立tempo_full目录。仓库配置位于trained_model/config_use/deployment_full*.json，原有LoRA启动入口继续按其配置执行。
+- 全量新配置已通过录制反馈及模拟机器人60秒RTC，现场运动仍由GUI逐轮确认。模型资产和运行日志按现有gitignore规则管理。

@@ -4,6 +4,8 @@ import copy
 
 import numpy as np
 
+from tempo_client.delay import DelayEstimator
+
 MODE_LABELS = {"tempo": "TEMPO 原生同步", "temporal_ensemble": "时间集成 TE", "rtc": "RTC 异步前缀引导"}
 
 
@@ -23,6 +25,7 @@ def select_runtime(cfg, task_id=None, mode=None):
     inference["mode"] = mode or inference["mode"]
     if inference["mode"] not in MODE_LABELS:
         raise ValueError("推理模式不支持")
+    DelayEstimator.validate(inference)
     horizon = cfg["model"]["action_horizon"]
     for key, maximum in (("execute_steps", horizon), ("rtc_min_execute_steps", horizon - 1)):
         if type(inference[key]) is not int or not 1 <= inference[key] <= maximum:

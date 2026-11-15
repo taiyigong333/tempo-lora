@@ -92,6 +92,8 @@ class Pi0Config(_model.BaseModelConfig):
     train_time_projections: bool = False
     compile_sample_actions: bool = True
     # 仅调整执行开销，不改变有效输入、模型参数或训练目标；默认保留历史路径。
+    # 推理时可跳过完全被mask的相机，保留token位置和attention mask。
+    skip_missing_cameras: bool = False
     compact_prefix: bool = False
     checkpoint_joint_forward: bool = True
     joint_gradient_checkpointing: bool = True

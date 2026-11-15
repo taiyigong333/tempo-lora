@@ -70,18 +70,20 @@ def create_policy(checkpoint, *, pytorch_device=None, sample_kwargs=None, compil
 
 class OnlinePolicy(BasePolicy):
     def __init__(self, policy, cfg, *, sam_stream=None, rtc_max_guidance=10.0,
-                 parallel_sam=False, compile_inference=False):
+                 parallel_sam=False, compile_inference=False, latest_sam_features_only=False):
         self.policy, self.cfg = policy, cfg
         if type(parallel_sam) is not bool:
             raise ValueError("parallel_sam必须为布尔值")
         self.parallel_sam = parallel_sam
+        if type(latest_sam_features_only) is not bool:
+            raise ValueError("latest_sam_features_only必须为布尔值")
         if not np.isfinite(rtc_max_guidance) or rtc_max_guidance <= 0:
             raise ValueError("RTC引导上限必须为有限正数")
         self.rtc_max_guidance = float(rtc_max_guidance)
         if sam_stream is None:
             from openpi.tempo_lora.sam import SAM2Stream, build_sam2_tiny
             sam_stream = SAM2Stream(build_sam2_tiny("cuda"), precision=cfg["model"]["dtype"],
-                                    compile_model=compile_inference)
+                                    compile_model=compile_inference, latest_features_only=latest_sam_features_only)
         self.sam = sam_stream
         mc, dc = cfg["model"], cfg["data"]
         self.history_width = round(dc["fps"] * dc["action_history_seconds"] / mc["action_history_steps"])
@@ -275,10 +277,16 @@ def evaluate(cfg, checkpoint=None, *, limit=None):
         prediction = policy.infer(observation, noise=noise)["actions"]
         durations.append((time.monotonic() - begin) * 1000)
         target = row["action"][t:t + mc["action_horizon"]]
-        errors.append(((prediction - target) ** 2).mean(0))
-    result = {"checkpoint": str(path), "samples": count, "native_action_mse_per_dim": np.mean(errors, 0).tolist(),
+        # 保留预测步维度，TE受推理延迟影响，主要使用第6步及以后的动作。
+        errors.append((prediction - target) ** 2)
+    mse_by_step = np.mean(errors, axis=0)
+    result = {"checkpoint": str(path), "samples": count, "native_action_mse_per_dim": mse_by_step.mean(0).tolist(),
               "policy_latency_ms_mean": float(np.mean(durations)), "policy_latency_ms_p95": float(np.quantile(durations, .95)),
               "closed_loop_success_rate": None, "evaluation": "offline_feedback_proxy", "data_split": partition}
+    result.update(native_action_mse_by_prediction_step=mse_by_step.tolist(),
+                  prediction_step_target_offset_s=((np.arange(mc["action_horizon"]) + 1) / dc["fps"]).tolist(),
+                  te_prediction_step_start=6,
+                  te_native_action_mse_per_dim=mse_by_step[5:].mean(0).tolist() if len(mse_by_step) >= 6 else None)
     json_write(Path(cfg["paths"]["run"]) / "evaluation.json", result)
     print(json.dumps(result), flush=True)
     return result

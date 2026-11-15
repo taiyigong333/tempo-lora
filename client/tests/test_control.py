@@ -1,13 +1,15 @@
 """三种真实调度分支、过期停止和实机出口的合成回归。"""
 
 import io
+import json
 from pathlib import Path
 import queue
 import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import Mock
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -161,3 +163,111 @@ class ControlTests(unittest.TestCase):
                 run.run(.1)
         self.assertFalse(robot.targets)
         self.assertTrue(robot.held)
+
+    def test_native_anchor_with_virtual_latency_and_eight_step_tail(self):
+        for latency in (.13, .2, .3):
+            for execute_steps in (1, 8):
+                with self.subTest(latency=latency, execute_steps=execute_steps), tempfile.TemporaryDirectory() as root:
+                    run, _, robot, summary = self.make_run("tempo", root, execute=True)
+                    run.inference["execute_steps"] = execute_steps
+                    clock = SimpleNamespace(elapsed=0.)
+
+                    class Stop:
+                        stopped = False
+
+                        def is_set(self):
+                            return self.stopped
+
+                        def set(self):
+                            self.stopped = True
+
+                        def wait(self, seconds):
+                            # 模拟网格唤醒的微小正抖动，避免恰好落在浮点边界。
+                            clock.elapsed += max(0, seconds) + 1e-7
+
+                    run.stop = Stop()
+                    run.origin_wall, run.origin_mono = 1000., 0.
+                    latest = -1
+
+                    def take(**kwargs):
+                        nonlocal latest
+                        end = int(clock.elapsed * 30)
+                        frames = [{"timestamp": 1000 + i / 30, "state": np.zeros(7, np.float32)}
+                                  for i in range(latest + 1, end + 1)]
+                        latest = end
+                        return frames
+
+                    def infer(frames, **kwargs):
+                        clock.elapsed += latency
+                        return {"actions": np.repeat(np.arange(1, 17, dtype=np.float32)[:, None], 7, axis=1),
+                                "round_trip_ms": latency * 1000}
+
+                    run.source.take = take
+                    run.client.infer = infer
+                    fake_time = SimpleNamespace(time=lambda: 1000 + clock.elapsed, monotonic=lambda: clock.elapsed)
+                    with patch("tempo_client.control.time", fake_time), patch("tempo_client.control.threading.Thread"):
+                        run.run(1.2)
+                    rows = [json.loads(line) for line in (Path(root) / "controls.jsonl").read_text().splitlines()]
+                    self.assertGreater(len(rows), 1)
+                    self.assertEqual(rows[0]["sources"][0]["prediction_step"], int(latency * 30) + 1)
+                    for row in rows:
+                        source = row["sources"][0]
+                        self.assertEqual(row["action"][0], source["prediction_step"])
+                        self.assertAlmostEqual(row["target_timestamp"], source["observed"] + source["prediction_step"] / 30)
+                        self.assertLessEqual(row["age_s"], .5)
+                        self.assertGreaterEqual(row["schedule_lag_s"], 0)
+                    self.assertEqual(summary["planned_targets"], len(rows))
+                    self.assertTrue(robot.held)
+
+    def test_rtc_bootstrap_and_next_prefix_keep_observation_anchors(self):
+        with tempfile.TemporaryDirectory() as root:
+            run, _, _, _ = self.make_run("rtc", root)
+            run.origin_wall = 1000.
+            run.tick = Mock(return_value=6)
+            frames = [[{"timestamp": 1000.}], [{"timestamp": 1000 + 4 / 30}]]
+            run.source.take = Mock(side_effect=frames)
+            actions = np.repeat(np.arange(1, 17, dtype=np.float32)[:, None], 7, axis=1)
+            run._request = Mock(side_effect=[({"actions": actions, "round_trip_ms": 200.}, batch[-1]["timestamp"])
+                                             for batch in frames])
+            run._active = Mock(side_effect=[True, True, True, True, False])
+            run._async()
+            self.assertTrue(run.errors.empty())
+            self.assertEqual(run.plans.latest_start(), 5)
+            second = run._request.call_args_list[1]
+            np.testing.assert_array_equal(second.args[0], actions[4:])
+            self.assertEqual(second.args[1], 9)
+            # 首块以观测后一帧为起点，响应落在tick6时，tick7必须取第7步。
+            first = Plans("rtc", 16, .05)
+            first.add(Plan(1, actions, 1000.))
+            self.assertEqual(first.action(7, 1000 + 7 / 30, .5)[0][0], 7)
+
+    def test_te_source_steps_match_same_physical_target_time(self):
+        plans = Plans("temporal_ensemble", 16, .05)
+        actions = np.repeat(np.arange(1, 17, dtype=np.float32)[:, None], 7, axis=1)
+        plans.add(Plan(1, actions, 1000.))
+        plans.add(Plan(4, actions, 1000.1))
+        target, observed, sources = plans.action(9, 1000.3, .5, include_sources=True)
+        self.assertEqual([value["prediction_step"] for value in sources], [9, 6])
+        self.assertAlmostEqual(observed, 1000.)
+        self.assertAlmostEqual(sum(value["weight"] for value in sources), 1.)
+        for value in sources:
+            self.assertAlmostEqual(value["observed"] + value["prediction_step"] / 30, 1000.3)
+        self.assertAlmostEqual(float(target[0]), sum(value["weight"] * value["prediction_step"] for value in sources), places=5)
+
+    def test_te_200ms_loop_records_executed_prediction_steps(self):
+        with tempfile.TemporaryDirectory() as root:
+            run, _, _, summary = self.make_run("temporal_ensemble", root, latency=.2)
+            run.run(.35)
+            rows = [json.loads(line) for line in (Path(root) / "controls.jsonl").read_text().splitlines()]
+            requests = [json.loads(line) for line in run.predictions.getvalue().splitlines()]
+            self.assertGreaterEqual(len(rows), 8)
+            self.assertGreaterEqual(min(value["prediction_step"] for value in rows[0]["sources"]), 6)
+            for row in rows:
+                self.assertGreaterEqual(row["dispatch_end_timestamp"], row["time"])
+                for source in row["sources"]:
+                    self.assertEqual(source["plan_start_tick"] + source["prediction_step"] - 1, row["tick"])
+                    self.assertAlmostEqual(source["observed"] + source["prediction_step"] / 30,
+                                           row["target_timestamp"], places=5)
+            for request in requests:
+                self.assertAlmostEqual(request["action_target_timestamps"][0], request["timestamp"] + 1 / 30)
+            self.assertAlmostEqual(sum(summary["prediction_step_weight_sum"].values()), len(rows))
