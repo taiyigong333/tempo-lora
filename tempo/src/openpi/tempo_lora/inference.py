@@ -142,7 +142,7 @@ class OnlinePolicy(BasePolicy):
         if "episode_id" not in obs:
             raise ValueError("在线输入必须携带 episode_id，防止跨轨迹状态泄漏")
         mode = obs.get("mode", "tempo")
-        if mode not in ("tempo", "temporal_ensemble", "rtc"):
+        if mode not in ("tempo", "temporal_ensemble", "rtc", "dynamicvla", "vlash"):
             raise ValueError("不支持的推理模式")
         prompt = obs.get("prompt", self.cfg["data"]["prompt"])
         if prompt != self.cfg["data"]["prompt"]:
@@ -167,6 +167,18 @@ class OnlinePolicy(BasePolicy):
                 if rgb.shape != (224, 224, 3) or rgb.dtype != np.uint8:
                     raise ValueError("在线图像需要 224×224 RGB uint8")
             previous = stamp
+        future_state = obs.get("future_state")
+        future_offset = obs.get("future_state_offset_steps", 0)
+        if type(future_offset) is not int:
+            raise ValueError("VLASH时间偏移必须为整数")
+        if future_state is not None:
+            future_state = np.asarray(future_state, np.float32)
+            if (mode != "vlash" or future_state.shape != (self.cfg["data"]["action_dim"],)
+                    or not np.isfinite(future_state).all() or type(future_offset) is not int
+                    or not 1 <= future_offset < self.cfg["model"]["action_horizon"]):
+                raise ValueError("VLASH未来状态或时间偏移不合法")
+        elif future_offset != 0:
+            raise ValueError("VLASH时间偏移需要对应的未来状态")
         sampling = {}
         prefix = obs.get("rtc_prefix")
         if prefix is not None:
@@ -199,7 +211,11 @@ class OnlinePolicy(BasePolicy):
                 self.ingest(frame, encode_sam=not self.parallel_sam)
             ingest_ms = (time.monotonic() - timer) * 1000
             placeholder = np.zeros((64, 256), np.float32) if self.parallel_sam else None
-            result = self.policy.infer(self.inputs(sam2_tokens=placeholder), noise=noise,
+            inputs = self.inputs(sam2_tokens=placeholder)
+            # 未来状态只条件化本次预测，实测反馈及图像/SAM2历史继续使用当前观测。
+            if future_state is not None:
+                inputs["state"] = future_state.copy()
+            result = self.policy.infer(inputs, noise=noise,
                                        **({"sample_kwargs": sampling} if sampling else {}))
         finally:
             # 出错同样排空当前批SAM2任务，下一episode重置时不会与旧任务竞争记忆。
@@ -211,12 +227,19 @@ class OnlinePolicy(BasePolicy):
         result["feedback_ingest_ms"] = ingest_ms
         result["mode"] = mode
         result["rtc_prefix_length"] = 0 if prefix is None else len(prefix)
+        result["action_start_offset_steps"] = future_offset
+        if mode == "vlash":
+            result["future_state_source"] = "action_plan" if future_state is not None else "measured_feedback"
         return result
 
     @property
     def metadata(self):
         return {**self.policy.metadata, "rtc_max_guidance": self.rtc_max_guidance,
-                "parallel_sam": self.parallel_sam}
+                "parallel_sam": self.parallel_sam,
+                "modes": ["tempo", "temporal_ensemble", "rtc", "dynamicvla", "vlash"],
+                "inference_algorithms": {"dynamicvla": "continuous_latency_aware_streaming",
+                                         "vlash": "future_state_rollforward"},
+                "vlash_offset_training_verified": False}
 
 
 def serve(cfg, checkpoint=None, *, port=None, host=None):

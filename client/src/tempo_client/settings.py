@@ -6,7 +6,8 @@ import numpy as np
 
 from tempo_client.delay import DelayEstimator
 
-MODE_LABELS = {"tempo": "TEMPO 原生同步", "temporal_ensemble": "时间集成 TE", "rtc": "RTC 异步前缀引导"}
+MODE_LABELS = {"tempo": "TEMPO 原生同步", "temporal_ensemble": "时间集成 TE", "rtc": "RTC 异步前缀引导",
+               "dynamicvla": "DynamicVLA 持续推理＋延迟感知", "vlash": "VLASH 未来状态感知异步"}
 
 
 def select_runtime(cfg, task_id=None, mode=None):

@@ -64,6 +64,33 @@ def main():
     if args.command == "replay" and args.input is None:
         parser.error("replay 需要 --input")
     cfg = load_config(args.config)
+    if cfg.get("inference", {}).get("mode") in ("dynamicvla", "vlash") and args.command != "probe":
+        # 新模式复用GUI的完整会话入口，使命令行回放和现场只读也遵循同一调度。
+        from tempo_client.session import SessionWorker
+        worker = SessionWorker()
+        worker.start(args.command, args.config, replay_path=args.input, duration=args.duration,
+                     batch_size=args.batch_size, inference_mode=cfg["inference"]["mode"])
+        summary = None
+        try:
+            while worker.thread.is_alive() or not worker.events.empty():
+                worker.thread.join(.1)
+                while not worker.events.empty():
+                    kind, value = worker.events.get()
+                    if kind in ("metadata", "prediction", "done"):
+                        print(json.dumps(value, ensure_ascii=False), flush=True)
+                    if kind == "done":
+                        summary = value
+        except BaseException:
+            worker.stop()
+            worker.thread.join(5)
+            raise
+        if summary is None or summary["outcome"] != "completed":
+            raise RuntimeError((summary or {}).get("error", "推理会话未完成"))
+        if args.output:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            records = [json.loads(line) for line in (Path(summary["log_dir"]) / "predictions.jsonl").read_text().splitlines()]
+            args.output.write_text(json.dumps(records, ensure_ascii=False, indent=2) + "\n")
+        return
     frames = replay_frames(args.input) if args.command == "replay" else None
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

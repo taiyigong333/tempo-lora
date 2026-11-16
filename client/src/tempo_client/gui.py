@@ -243,6 +243,10 @@ class TempoApp:
             denoise_steps = cfg['model'].get('denoise_steps', 10)
             detail = (f"RTC · {denoise_steps}次去噪，延迟超限停止" if mode == "rtc"
                       else f"{denoise_steps}次去噪 · {cfg['model']['action_horizon']}×{cfg['model']['action_dim']}绝对关节与夹爪目标")
+            if mode == "dynamicvla":
+                detail = "持续异步预测 · 按时间丢弃过期前缀"
+            elif mode == "vlash":
+                detail = "未来状态滚动 · 当前权重未做VLASH偏移增强训练"
             self.selection_info.set(task["prompt"] + "  ·  " + detail)
         except Exception:
             self.selection_info.set("请选择配置中的有效任务和推理方式")

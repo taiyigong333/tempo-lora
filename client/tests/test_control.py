@@ -57,7 +57,7 @@ class TimedClient:
             raise OSError("合成网络已关闭")
         prefix = kwargs.get("rtc_prefix")
         return {"actions": np.full((16, 7), .05, np.float32), "round_trip_ms": self.latency * 1000,
-                "mode": kwargs["mode"], "rtc_prefix_length": 0 if prefix is None else len(prefix)}
+                "mode": kwargs["mode"], "action_start_offset_steps": kwargs.get("future_state_offset_steps", 0), "rtc_prefix_length": 0 if prefix is None else len(prefix)}
 
     def abort(self):
         self.stopped.set()
@@ -122,7 +122,7 @@ class ControlTests(unittest.TestCase):
         self.assertIsNone(plans.action(17, time.time(), .5))
 
     def test_async_modes_run_real_control_loop(self):
-        for mode in ("temporal_ensemble", "rtc"):
+        for mode in ("temporal_ensemble", "rtc", "dynamicvla", "vlash"):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as root:
                 run, client, _, summary = self.make_run(mode, root)
                 run.run(.2)
@@ -271,3 +271,28 @@ class ControlTests(unittest.TestCase):
             for request in requests:
                 self.assertAlmostEqual(request["action_target_timestamps"][0], request["timestamp"] + 1 / 30)
             self.assertAlmostEqual(sum(summary["prediction_step_weight_sum"].values()), len(rows))
+
+    def test_future_query_preserves_pending_prefix_and_new_plan_handoff(self):
+        now = time.time()
+        for mode in ("dynamicvla", "vlash"):
+            plans = Plans(mode, 16, 0.)
+            plans.add(Plan(1, np.ones((16, 7), np.float32), now))
+            np.testing.assert_array_equal(plans.future_state(10, now, .5), 1.)
+            plans.add(Plan(8, np.full((16, 7), 2, np.float32), now, 7))
+            np.testing.assert_array_equal(plans.action(3, now, .5)[0], 1.)
+            np.testing.assert_array_equal(plans.action(8, now, .5)[0], 2.)
+            self.assertIsNone(plans.action(24, now, .5))
+
+    def test_vlash_uses_absolute_future_state_with_positive_offset(self):
+        with tempfile.TemporaryDirectory() as root:
+            run, client, _, summary = self.make_run("vlash", root)
+            run.run(.3)
+            future = [r for r in client.requests if "future_state" in r]
+            self.assertTrue(future)
+            for request in future:
+                self.assertGreater(request["future_state_offset_steps"], 0)
+                np.testing.assert_array_equal(request["future_state"], np.full(7, .05, np.float32))
+
+
+if __name__ == "__main__":
+    unittest.main()

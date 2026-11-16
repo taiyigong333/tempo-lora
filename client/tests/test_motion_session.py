@@ -96,7 +96,8 @@ class SimulatedClient(TimedClient):
         self.target = np.r_[cfg["home"]["joint_positions_rad"], .05].astype(np.float32)
         self.local_ip = "192.168.50.1"
         self.metadata = {"config": cfg["model"]["config"], "step": 10000, "checkpoint": "step_00010000.pt",
-                         "action_horizon": 16, "native_action_dim": 7, "modes": ["tempo", "temporal_ensemble", "rtc"],
+                         "action_horizon": 16, "native_action_dim": 7, "modes": ["tempo", "temporal_ensemble", "rtc", "dynamicvla", "vlash"],
+                         "inference_algorithms": {"dynamicvla": "continuous_latency_aware_streaming", "vlash": "future_state_rollforward"},
                          "rtc_algorithm": "decoded_action_vjp_soft_prefix", "protocol_version": 2,
                          "task_prompts": ["grab the rotating red square"]}
 
@@ -127,7 +128,7 @@ class MotionSessionTests(unittest.TestCase):
                      patch("tempo_client.session.CameraStream", side_effect=factory), \
                      patch("tempo_client.session.Client", SimulatedClient), \
                      patch("tempo_client.session.Robot", SimulatedRobot):
-                    for mode in ("tempo", "temporal_ensemble", "rtc"):
+                    for mode in ("tempo", "temporal_ensemble", "rtc", "dynamicvla", "vlash"):
                         for execute in (False, True):
                             with self.subTest(mode=mode, execute=execute):
                                 worker.start("live", DEFAULT_CONFIG, duration=.18, inference_mode=mode,
@@ -161,6 +162,27 @@ class MotionSessionTests(unittest.TestCase):
                 if worker.thread is not None:
                     worker.thread.join(8)
                 worker.close_cameras()
+
+    def test_replay_future_state_through_session_entry(self):
+        image = np.zeros((224, 224, 3), np.uint8)
+        frames = [{"timestamp": i / 30, "state": np.zeros(7, np.float32),
+                   "images": {"head": image, "left_wrist": image}} for i in range(12)]
+        for mode in ("dynamicvla", "vlash"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                worker = SessionWorker()
+                with patch("tempo_client.session.Client", SimulatedClient), \
+                     patch("tempo_client.session.replay_frames", return_value=frames):
+                    worker.start("replay", DEFAULT_CONFIG, replay_path="unused.npz", batch_size=4,
+                                 inference_mode=mode, log_root=directory)
+                    worker.thread.join(8)
+                self.assertFalse(worker.thread.is_alive())
+                events = []
+                while not worker.events.empty():
+                    events.append(worker.events.get())
+                summary = next(v for k, v in events if k == "done")
+                self.assertEqual(summary["outcome"], "completed", summary)
+                self.assertEqual(summary["batches"], 3)
+                self.assertEqual(summary["robot_commands"], 0)
 
 
 if __name__ == "__main__":

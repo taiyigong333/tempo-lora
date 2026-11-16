@@ -19,6 +19,7 @@ files = {
     'trained_model/scripts/start_tempo_full_service.sh': 'trained_model/scripts/start_service.sh',
     'trained_model/config_use/deployment_full.json': 'trained_model/deployment.json',
     'trained_model/config_use/deployment_full_rtc_paper.json': 'trained_model/deployment_rtc_paper.json',
+    'trained_model/config_use/deployment_full_step4000.json': 'trained_model/deployment_step4000.json',
     'tempo/tests/test_full_deployment.py': 'tests/test_full_deployment.py',
     'tempo/tests/test_exact_optimizations.py': 'tests/test_exact_optimizations.py',
 }

@@ -64,6 +64,7 @@ class Policy:
 
     def infer(self, obs, **kwargs):
         self.kwargs = kwargs
+        self.inputs = obs
         return {"actions": np.zeros((16, 7), np.float32)}
 
 
@@ -155,3 +156,38 @@ def test_visual_encoding_finishes_before_sam_wait_and_fusion():
     assert events == ["vision", "vision", "sam_wait", "fusion", "language"]
     torch.testing.assert_close(embs[:, :2], torch.full((1, 2, 4), 3.))
     torch.testing.assert_close(embs[:, 2:4], torch.full((1, 2, 4), 2.))
+
+
+def test_vlash_conditions_only_policy_state_and_keeps_measured_history():
+    policy = online()
+    future = np.full(7, .6, np.float32)
+    result = policy.infer({**observation(), "mode": "vlash", "future_state": future,
+                           "future_state_offset_steps": 4})
+    np.testing.assert_array_equal(policy.policy.inputs["state"], future)
+    np.testing.assert_array_equal(policy.last_state, observation()["state"])
+    assert result["action_start_offset_steps"] == 4
+    assert result["future_state_source"] == "action_plan"
+    assert "sample_kwargs" not in policy.policy.kwargs
+    assert policy.metadata["vlash_offset_training_verified"] is False
+
+
+@pytest.mark.parametrize("change", [
+    {"future_state": np.ones(7), "future_state_offset_steps": 0},
+    {"future_state": np.ones(7), "future_state_offset_steps": 16},
+    {"future_state": np.ones(6), "future_state_offset_steps": 1},
+    {"future_state": np.full(7, np.nan), "future_state_offset_steps": 1},
+    {"future_state_offset_steps": 1},
+    {"future_state": np.ones(7), "future_state_offset_steps": 1.5},
+])
+def test_invalid_vlash_request_preserves_history(change):
+    policy = online()
+    with pytest.raises(ValueError):
+        policy.infer({**observation(), "mode": "vlash", **change})
+    assert policy.frame == -1 and policy.sam.count == 0
+
+
+def test_dynamicvla_has_no_rtc_guidance_or_state_shift():
+    policy = online()
+    result = policy.infer({**observation(), "mode": "dynamicvla"})
+    np.testing.assert_array_equal(policy.policy.inputs["state"], observation()["state"])
+    assert result["action_start_offset_steps"] == 0 and "sample_kwargs" not in policy.policy.kwargs

@@ -1,4 +1,4 @@
-"""三种推理模式共用30Hz关节目标调度与反馈保护。"""
+"""五种推理模式共用30Hz关节目标调度与反馈保护。"""
 
 from dataclasses import dataclass
 import json
@@ -19,6 +19,7 @@ class Plan:
     start: int
     actions: np.ndarray
     observed: float
+    offset_steps: int = 0
 
 
 class Plans:
@@ -32,10 +33,12 @@ class Plans:
         if actions.shape != (self.horizon, 7) or not np.isfinite(actions).all():
             raise ValueError("动作块形状或数值无效")
         with self.lock:
-            if self.mode != "temporal_ensemble":
+            if self.mode not in ("temporal_ensemble", "dynamicvla", "vlash"):
                 self.plans.clear()
-            self.plans = [value for value in self.plans if value.start + self.horizon > plan.start]
-            self.plans.append(Plan(plan.start, actions.copy(), plan.observed))
+            # 新模式允许计划在未来接管，当前有效的旧前缀由控制时间轴回收。
+            if self.mode not in ("dynamicvla", "vlash"):
+                self.plans = [value for value in self.plans if value.start + self.horizon > plan.start]
+            self.plans.append(Plan(plan.start, actions.copy(), plan.observed, plan.offset_steps))
 
     def action(self, tick, now, max_age, *, include_sources=False):
         with self.lock:
@@ -55,10 +58,21 @@ class Plans:
                       min(value.observed for value in choices))
             if include_sources:
                 sources = [{"plan_start_tick": value.start, "observed": value.observed,
-                            "prediction_step": tick - value.start + 1, "weight": float(weight)}
+                            "prediction_step": tick - value.start + 1, "weight": float(weight),
+                            "prediction_offset_steps": value.offset_steps}
                            for value, weight in zip(choices, weights)]
                 return result[0], result[1], sources
             return result
+
+    def future_state(self, tick, now, max_age):
+        # 绝对关节目标直接近似该时刻状态，查询未来不能清理当前仍待执行的计划。
+        with self.lock:
+            choices = [value for value in self.plans if value.start <= tick < value.start + self.horizon
+                       and 0 <= now - value.observed <= max_age]
+            if not choices:
+                raise RuntimeError("VLASH已有动作计划无法覆盖预计接管状态")
+            plan = choices[-1]
+            return plan.actions[tick - plan.start].copy()
 
     def prefix(self, tick):
         with self.lock:
@@ -127,11 +141,13 @@ class InferenceRun:
                 return
             self.stop.wait(.02)
 
-    def _request(self, prefix=None, delay=0, frames=None):
+    def _request(self, prefix=None, delay=0, frames=None, *, future_state=None, future_state_offset_steps=0):
         frames = self.source.take(max_frames=self.cfg["live"]["max_pending_frames"]) if frames is None else frames
         self.events.put(("frame", frames[-1]))
+        future = {} if future_state is None else {"future_state": future_state,
+                                                   "future_state_offset_steps": future_state_offset_steps}
         result = self.client.infer(frames, mode=self.mode, prompt=self.cfg["task"]["prompt"],
-                                   rtc_prefix=prefix, rtc_delay=delay)
+                                   rtc_prefix=prefix, rtc_delay=delay, **future)
         if not self._active():
             raise InterruptedError("推理已停止")
         record = report(result, frames)
@@ -140,7 +156,13 @@ class InferenceRun:
                       rtc_delay=delay, robot_commands=self.robot.sent_commands,
                       rtc_delay_estimator=self.delay_estimator.method,
                       rtc_latency_estimate_ms=self.delay_estimator.seconds * 1000)
-        anchor = self.action_start(frames[-1]["timestamp"])
+        offset = result.get("action_start_offset_steps", 0)
+        if type(offset) is not int or offset != future_state_offset_steps:
+            raise ValueError("服务端动作时间偏移与请求不一致")
+        anchor = self.action_start(frames[-1]["timestamp"]) + offset
+        record.update(action_start_offset_steps=offset,
+                      future_state=None if future_state is None else future_state.tolist(),
+                      discarded_prefix_steps=max(0, self.tick() + 1 - anchor))
         record.update(action_start_tick=anchor, received_timestamp=time.time(),
                       first_future_prediction_step=max(1, self.tick() + 2 - anchor),
                       action_target_timestamps=[self.origin_wall + (anchor + k) / self.fps
@@ -170,11 +192,23 @@ class InferenceRun:
                     delay = max(0, self.tick() + 1 - anchor) + math.ceil(self.delay_estimator.seconds * self.fps) + self.inference["rtc_delay_margin_steps"]
                     if prefix is None or len(prefix) < delay:
                         raise RuntimeError("RTC剩余前缀无法覆盖实测推理延迟，请检查GPU负载与推理参数")
-                result, observed = self._request(prefix, delay, frames)
+                future = {}
+                if self.mode == "vlash" and previous_start is not None:
+                    # 论文选择严格大于实测延迟的最小整数偏移，额外计入反馈已过去的步数。
+                    elapsed = max(0, self.tick() + 1 - anchor)
+                    offset = elapsed + math.floor(self.delay_estimator.seconds * self.fps) + 1
+                    if offset >= self.horizon:
+                        raise RuntimeError("VLASH预计延迟已超出动作窗口")
+                    state_tick = anchor - 1 + offset
+                    future = {"future_state": self.plans.future_state(state_tick, time.time(), self.safety["action_max_age_s"]),
+                              "future_state_offset_steps": offset}
+                result, observed = self._request(prefix, delay, frames, **future)
+                offset = result.get("action_start_offset_steps", 0)
+                anchor += offset
                 self.delay_estimator.update(result["round_trip_ms"] / 1000)
                 if self.tick() + 1 >= anchor + self.horizon:
                     raise RuntimeError("异步结果已超出模型动作窗口")
-                self.plans.add(Plan(anchor, result["actions"], observed))
+                self.plans.add(Plan(anchor, result["actions"], observed, offset))
         except Exception as error:
             if self._active():
                 self._fail(error)

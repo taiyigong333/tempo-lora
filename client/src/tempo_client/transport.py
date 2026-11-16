@@ -75,6 +75,9 @@ class Client:
             raise ValueError("所选任务与当前服务模型不匹配")
         if mode == "rtc" and self.metadata.get("rtc_algorithm") != "decoded_action_vjp_soft_prefix":
             raise ValueError("服务器RTC潜变量引导算法不匹配")
+        algorithms = {"dynamicvla": "continuous_latency_aware_streaming", "vlash": "future_state_rollforward"}
+        if mode in algorithms and self.metadata.get("inference_algorithms", {}).get(mode) != algorithms[mode]:
+            raise ValueError("服务器推理算法实现与所选模式不匹配")
 
     def reserve(self):
         if self.reserved:
@@ -90,11 +93,23 @@ class Client:
             raise
         self.reserved = True
 
-    def infer(self, frames, *, mode="tempo", prompt=None, rtc_prefix=None, rtc_delay=0):
+    def infer(self, frames, *, mode="tempo", prompt=None, rtc_prefix=None, rtc_delay=0,
+              future_state=None, future_state_offset_steps=0):
         stamp = validate_frames(frames, self.cfg["model"]["fps"], self.previous)
-        if mode not in ("tempo", "temporal_ensemble", "rtc"):
+        if mode not in ("tempo", "temporal_ensemble", "rtc", "dynamicvla", "vlash"):
             raise ValueError("推理模式不支持")
         request = {"episode_id": self.episode, "feedback": frames, "mode": mode}
+        if type(future_state_offset_steps) is not int:
+            raise ValueError("VLASH时间偏移必须为整数")
+        if future_state is not None:
+            state = np.asarray(future_state, np.float32)
+            if (mode != "vlash" or state.shape != (7,) or not np.isfinite(state).all()
+                    or type(future_state_offset_steps) is not int
+                    or not 1 <= future_state_offset_steps < self.cfg["model"]["action_horizon"]):
+                raise ValueError("VLASH未来状态或时间偏移不合法")
+            request.update(future_state=state.copy(), future_state_offset_steps=future_state_offset_steps)
+        elif future_state_offset_steps != 0:
+            raise ValueError("VLASH时间偏移需要对应的未来状态")
         if prompt is not None:
             request["prompt"] = prompt
         if rtc_prefix is not None:
@@ -115,6 +130,8 @@ class Client:
                 raise ValueError("服务器返回动作形状、类型或有限性错误")
             if result.get("mode", "tempo") != mode:
                 raise ValueError("服务端实际推理模式与请求不匹配")
+            if mode in ("dynamicvla", "vlash") and result.get("action_start_offset_steps") != future_state_offset_steps:
+                raise ValueError("服务端动作时间偏移与请求不一致")
         except BaseException:
             self.close()
             raise

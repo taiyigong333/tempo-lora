@@ -10,7 +10,8 @@ fi
 case "$PROFILE" in
     default) CONFIG="$ROOT/trained_model/deployment.json" ;;
     rtc_paper) CONFIG="$ROOT/trained_model/deployment_rtc_paper.json" ;;
-    *) echo "支持的配置为 default 或 rtc_paper" >&2; exit 2 ;;
+    step4000) CONFIG="$ROOT/trained_model/deployment_step4000.json" ;;
+    *) echo "支持的配置为 default、rtc_paper或step4000" >&2; exit 2 ;;
 esac
 SESSION=tempo_full_inference
 # 锁覆盖检查、退出和新进程创建，避免两个客户端并发切换模型。
@@ -27,6 +28,10 @@ if tmux has-session -t "=$SESSION" 2>/dev/null; then
     if [[ "$RUNNING_COMMAND" == *"--config $CONFIG"* && "$RESTART" != --restart ]]; then
         echo "配置已运行 $PROFILE"
         exit 0
+    fi
+    if [[ -n "$(ss -Htn state established '( sport = :8002 )')" ]]; then
+        echo "8002端口仍有客户端连接，请结束当前推理后切换模型" >&2
+        exit 1
     fi
     tmux send-keys -t "$SESSION" C-c
     for attempt in {1..40}; do

@@ -2,6 +2,7 @@
 
 from datetime import datetime
 import json
+import math
 from pathlib import Path
 import queue
 import shlex
@@ -16,7 +17,8 @@ from tempo_client.live import LiveFeedback
 from tempo_client.transport import Client
 from tempo_client.settings import select_runtime
 from tempo_client.robot import Robot
-from tempo_client.control import InferenceRun
+from tempo_client.control import InferenceRun, Plan, Plans
+from tempo_client.delay import DelayEstimator
 
 
 class SessionWorker:
@@ -178,16 +180,20 @@ class SessionWorker:
                 self.cancel.wait(2)
         raise TimeoutError("模型服务启动超过配置时限，请查看4090服务日志")
 
-    def _predict(self, frames, stream, summary, cfg=None, prefix=None):
+    def _predict(self, frames, stream, summary, cfg=None, prefix=None, *, future_state=None, future_state_offset_steps=0):
         self._check_cancel()
         self.events.put(("frame", frames[-1]))
         kwargs = {} if cfg is None else {"mode": cfg["inference"]["mode"], "prompt": cfg["task"]["prompt"]}
         if prefix is not None:
             kwargs.update(rtc_prefix=prefix, rtc_delay=0)
+        if future_state is not None:
+            kwargs.update(future_state=future_state, future_state_offset_steps=future_state_offset_steps)
         result = self.client.infer(frames, **kwargs)
         self._check_cancel()
         record = report(result, frames)
         record["state"] = frames[-1]["state"].tolist()
+        if future_state is not None:
+            record.update(future_state=future_state.tolist(), action_start_offset_steps=future_state_offset_steps)
         stream.write(json.dumps(record, ensure_ascii=False) + "\n")
         stream.flush()
         summary["batches"] += 1
@@ -238,8 +244,26 @@ class SessionWorker:
                         self.client.validate_mode(cfg["inference"]["mode"], cfg["task"]["prompt"])
                         self.client.reserve()
                     prefix = None
+                    future_plans = (Plans("vlash", cfg["model"]["action_horizon"], 0.)
+                                    if selected is not None and cfg["inference"]["mode"] == "vlash" else None)
+                    estimate = DelayEstimator(cfg["inference"], cfg["model"]["fps"]) if future_plans is not None else None
                     for begin in range(0, len(frames), batch_size):
-                        result = self._predict(frames[begin:begin + batch_size], stream, summary, selected, prefix)
+                        batch = frames[begin:begin + batch_size]
+                        future = {}
+                        if future_plans is not None:
+                            observed = batch[-1]["timestamp"]
+                            tick = round((observed - frames[0]["timestamp"]) * cfg["model"]["fps"])
+                            if future_plans.latest_start() is not None:
+                                offset = math.floor(estimate.seconds * cfg["model"]["fps"]) + 1
+                                if offset >= cfg["model"]["action_horizon"]:
+                                    raise RuntimeError("VLASH预计延迟已超出动作窗口")
+                                future = {"future_state": future_plans.future_state(tick + offset, observed, cfg["safety"]["action_max_age_s"]),
+                                          "future_state_offset_steps": offset}
+                        result = self._predict(batch, stream, summary, selected, prefix, **future)
+                        if future_plans is not None:
+                            offset = result.get("action_start_offset_steps", 0)
+                            future_plans.add(Plan(tick + 1 + offset, result["actions"], observed, offset))
+                            estimate.update(result["round_trip_ms"] / 1000)
                         if selected is not None and cfg["inference"]["mode"] == "rtc":
                             prefix = result["actions"][min(batch_size, len(result["actions"]) - 1):].copy()
                 elif mode == "live":

@@ -1,0 +1,10 @@
+# 复用30Hz时钟与反馈保护，新模式在推理完成后立即请求下一块。
+mode: dynamicvla
+execute_steps: 1
+ensemble_decay: 0.05
+rtc_min_execute_steps: 1
+rtc_delay_estimator: window_max
+rtc_delay_buffer_size: 10
+rtc_initial_delay_steps: 0
+rtc_delay_margin_steps: 1
+first_action_timeout_s: 15

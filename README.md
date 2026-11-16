@@ -43,3 +43,23 @@ PiperX 路径 `/home/cv/gcj/project/baseline_fast/tempo-lora`，桌面双击“T
 相机首次打开后保持持续开流，停止推理后预览继续，未使用的旧帧自动覆盖。空闲时可点击“释放相机”，退出GUI也会统一关闭。相机生命周期与验证详见部署文档。
 
 三种模式保持10次去噪。当前SAM2与双相机视觉编码并行，局部编译推理执行路径。真实双相机/CAN原生只读20秒、TE只读60秒通过，RTC仍会触发时效保护。现场执行需逐轮确认，详细验证、数值差异与限制见 `docs/推理延迟故障修复.md`。
+
+## 顺时针完整模型与新增推理模式
+
+顺时针batch2、3、4的完整微调模型提供step4000和step5000，30Hz、30步动作块。全量服务地址为`192.168.50.2:8002`，支持TEMPO、TE、RTC、DynamicVLA持续推理和VLASH未来状态异步推理。
+
+在PiperX桌面终端运行所选入口。
+
+```bash
+cd /home/cv/gcj/project/baseline_fast/tempo-lora
+bash run_gui_full_step4000.sh
+# step5000的两个新增模式入口
+bash run_gui_full_dynamicvla.sh
+bash run_gui_full_vlash.sh
+```
+
+打开GUI后，点击“启动模型服务”，等待预热完成后“检查连接”，确认检查点步数，选择推理方式后点击“开始推理 F5”。默认只读，实机运动每轮通过GUI现场确认。按Esc停止并保持。
+
+两份检查点均完成五模式真实GPU录制反馈验证。两种新模式各完成每模型10秒连续模拟调度。验证后模型服务已按用户要求关闭，下次使用需启动服务。VLASH使用现有TEMPO权重进行推理适配，当前权重未加入论文时间偏移训练增强。
+
+完整使用说明、step4000专用新模式配置、模型校验与验证结果见[推理模式与step4000](docs/tempo_full/inference_modes_20261116.md)。
