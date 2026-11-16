@@ -15,5 +15,13 @@
   "skip_missing_cameras": true,
   "latest_sam_features_only": true,
   "inference_profile": "rtc_paper",
-  "rtc_max_guidance": 5.0
+  "rtc_max_guidance": 5.0,
+  "cpu_threads": 2,
+  "denoise_compile_mode": "default",
+  "warmup_batches": [
+    1,
+    4,
+    8
+  ],
+  "warmup_repeats": 3
 }

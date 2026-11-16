@@ -660,6 +660,8 @@ class PI0Pytorch(nn.Module):
     def sample_actions(self, device, observation, noise=None, num_steps=10,
                        rtc_prefix=None, rtc_weights=None, rtc_max_guidance=10.0, sam2_tokens_provider=None) -> Tensor:
         """Do a full inference forward and compute the action (batch_size x num_steps x num_motors)"""
+        if type(num_steps) is not int or num_steps < 1:
+            raise ValueError("num_steps必须为正整数")
         bsize = observation.state.shape[0]
         if noise is None:
             noise = self.sample_noise((bsize, self.flow_positions, self.flow_dim), device)
@@ -705,7 +707,9 @@ class PI0Pytorch(nn.Module):
                     or not math.isfinite(rtc_max_guidance) or rtc_max_guidance <= 0):
                 raise ValueError("RTC前缀、权重或引导上限不合法")
         time = torch.tensor(1.0, dtype=torch.float32, device=device)
-        while time >= -dt / 2:
+        # 次数由CPU整数决定，避免每次读取CUDA标量引起同步。
+        # 保留原来的FP32时间递推，使同噪声输出沿用既有数值路径。
+        for _ in range(num_steps):
             expanded_time = time.expand(bsize)
             def velocity(value):
                 return self.denoise_step(state, prefix_pad_masks, past_key_values, value,

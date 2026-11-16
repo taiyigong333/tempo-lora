@@ -66,6 +66,7 @@ class Policy(BasePolicy):
 
     @override
     def infer(self, obs: dict, *, noise: np.ndarray | None = None, sample_kwargs: dict | None = None) -> dict:  # type: ignore[misc]
+        total_started = time.monotonic()
         # Make a copy since transformations may modify the inputs in place.
         inputs = jax.tree.map(lambda x: x, obs)
         inputs = self._input_transform(inputs)
@@ -93,15 +94,20 @@ class Policy(BasePolicy):
             "state": inputs["state"],
             "actions": self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),
         }
-        model_time = time.monotonic() - start_time
         if self._is_pytorch_model:
             outputs = jax.tree.map(lambda x: np.asarray(x[0, ...].detach().cpu()), outputs)
         else:
             outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
 
+        # 回传CPU数组已经等待CUDA完成，此后计时才包含真实计算与设备传输。
+        model_time = time.monotonic() - start_time
+        output_started = time.monotonic()
         outputs = self._output_transform(outputs)
         outputs["policy_timing"] = {
             "infer_ms": model_time * 1000,
+            "input_transform_ms": (start_time - total_started) * 1000,
+            "output_transform_ms": (time.monotonic() - output_started) * 1000,
+            "total_ms": (time.monotonic() - total_started) * 1000,
         }
         return outputs
 

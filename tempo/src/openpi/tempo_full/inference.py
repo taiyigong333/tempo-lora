@@ -3,6 +3,7 @@
 import argparse
 import dataclasses
 import json
+import time
 from pathlib import Path
 
 import numpy as np
@@ -23,9 +24,11 @@ from openpi.tempo_lora.inference import OnlinePolicy
 from openpi.tempo_lora.model import require_patch
 
 
-def read_deployment(path):
+def read_deployment(path, *, overrides=None):
     path = Path(path).resolve()
     settings = json.loads(path.read_text())
+    settings.update({key: value for key, value in (overrides or {}).items() if value is not None})
+    validate_runtime(settings)
     settings.setdefault('inference_profile', 'default')
     settings.setdefault('denoise_steps', 10)
     settings.setdefault('rtc_max_guidance', 10.0)
@@ -34,7 +37,7 @@ def read_deployment(path):
     guidance = settings['rtc_max_guidance']
     if isinstance(guidance, bool) or not isinstance(guidance, (int, float)) or not np.isfinite(guidance) or guidance <= 0:
         raise ValueError('rtc_max_guidance必须为有限正数')
-    for key in ('skip_missing_cameras', 'latest_sam_features_only'):
+    for key in ('compile_inference', 'parallel_sam', 'skip_missing_cameras', 'latest_sam_features_only'):
         if type(settings.get(key, False)) is not bool:
             raise ValueError(f'{key}必须为布尔值')
     # 相对路径以部署配置为基准，便于独立搬移 trained_model。
@@ -100,8 +103,8 @@ def create_policy(settings, cfg, config, norm):
     model.eval().requires_grad_(False)
     model._ut_decoder.eval().requires_grad_(False)
     if settings.get('compile_inference', False):
-        model.denoise_step = torch.compile(model.denoise_step, dynamic=True, mode='default')
-        model._ut_decoder.forward = torch.compile(model._ut_decoder.forward, dynamic=False, mode='default')
+        model.denoise_step = torch.compile(model.denoise_step, dynamic=True, mode=settings['denoise_compile_mode'])
+        model._ut_decoder.forward = torch.compile(model._ut_decoder.forward, dynamic=False, mode=settings['denoise_compile_mode'])
     mask = transforms.make_bool_mask(6, -1)
     def native_inputs(result):
         # 训练数据入口在归一化后统一为 float32，在线保留同样边界。
@@ -129,27 +132,64 @@ def create_policy(settings, cfg, config, norm):
                                   'compile_inference': settings.get('compile_inference', False),
                                   'skip_missing_cameras': settings.get('skip_missing_cameras', False),
                                   'latest_sam_features_only': settings.get('latest_sam_features_only', False),
+                                  'cpu_threads': torch.get_num_threads(),
+                                  'denoise_compile_mode': settings['denoise_compile_mode'],
+                                  'warmup_batches': settings['warmup_batches'],
+                                  'warmup_repeats': settings['warmup_repeats'],
                                   'observation_offsets_frames': [-20, -10, 0]})
     policy.tempo_norm_stats = norm
     return policy
 
 
-def warmup(policy, norm):
+def validate_runtime(settings):
+    # 旧配置缺省沿用8线程，新的部署选项在模型加载前统一核验。
+    settings.setdefault('cpu_threads', 8)
+    settings.setdefault('denoise_compile_mode', 'default')
+    settings.setdefault('warmup_batches', [1, 4, 8])
+    settings.setdefault('warmup_repeats', 3)
+    for key in ('cpu_threads', 'warmup_repeats'):
+        if type(settings[key]) is not int or settings[key] < 1:
+            raise ValueError(f'{key}必须为正整数')
+    if settings['denoise_compile_mode'] not in ('default', 'reduce-overhead', 'max-autotune-no-cudagraphs'):
+        raise ValueError('不支持的denoise_compile_mode')
+    batches = settings['warmup_batches']
+    if not isinstance(batches, list) or not batches or any(type(n) is not int or not 1 <= n <= 300 for n in batches):
+        raise ValueError('warmup_batches必须为包含1..300整数的非空列表')
+
+
+def warmup(policy, norm, settings=None):
+    options = dict(settings or {})
+    validate_runtime(options)
     state = np.asarray(norm['state'].mean, np.float32)
     images = {camera: np.zeros((224, 224, 3), np.uint8) for camera in ('head', 'left_wrist')}
-    def frame(index):
-        return {'timestamp': index / 30, 'state': state, 'images': images}
-    first = policy.infer({'episode_id': '__warmup__', 'feedback': [frame(0)]})
-    guided = policy.infer({'episode_id': '__warmup__', 'mode': 'rtc',
-                           'feedback': [frame(i) for i in range(1, 4)],
-                           'rtc_prefix': first['actions'], 'rtc_delay': 1})
     expected = (policy.cfg['model']['action_horizon'], 7)
-    for result in (first, guided):
-        if result['actions'].shape != expected or not np.isfinite(result['actions']).all():
-            raise ValueError('预热动作形状或数值异常')
-    policy.reset()
-    print(json.dumps({'warmup': 'passed', 'shape': expected, 'tempo_ms': first['end_to_end_ms'],
-                      'rtc_ms': guided['end_to_end_ms']}), flush=True)
+    timings = []
+    # 覆盖首帧、连续记忆和不同积压帧数，并在开放端口前完成RTC反向图编译。
+    try:
+        for mode in ('tempo', 'rtc'):
+            policy.reset()
+            index = 0
+            previous = np.tile(state, (expected[0], 1))
+            for repeat in range(options['warmup_repeats']):
+                for count in options['warmup_batches']:
+                    frames = [{'timestamp': i / 30, 'state': state, 'images': images}
+                              for i in range(index, index + count)]
+                    request = {'episode_id': '__warmup__', 'mode': mode, 'feedback': frames}
+                    if mode == 'rtc':
+                        request.update(rtc_prefix=previous, rtc_delay=1)
+                    result = policy.infer(request)
+                    previous = result['actions']
+                    if previous.shape != expected or not np.isfinite(previous).all():
+                        raise ValueError('预热动作形状或数值异常')
+                    timings.append({'mode': mode, 'repeat': repeat, 'feedback_frames': count,
+                                    'end_to_end_ms': result['end_to_end_ms']})
+                    index += count
+        torch.cuda.synchronize()
+    finally:
+        # 预热历史必须丢弃，首个真实episode从干净状态开始。
+        policy.reset()
+    print(json.dumps({'warmup': 'passed', 'shape': expected, 'samples': timings}), flush=True)
+    return timings
 
 
 def main():
@@ -158,8 +198,20 @@ def main():
     parser.add_argument('--host')
     parser.add_argument('--port', type=int)
     parser.add_argument('--check-files', action='store_true')
+    parser.add_argument('--warmup-only', action='store_true')
+    parser.add_argument('--cpu-threads', type=int)
+    parser.add_argument('--denoise-steps', type=int)
+    parser.add_argument('--rtc-max-guidance', type=float)
+    parser.add_argument('--compile-mode', dest='denoise_compile_mode')
+    parser.add_argument('--compile-inference', action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument('--parallel-sam', action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument('--warmup-batches', type=int, nargs='+')
+    parser.add_argument('--warmup-repeats', type=int)
     args = parser.parse_args()
-    settings, cfg, config, norm = read_deployment(args.config)
+    keys = ('cpu_threads', 'denoise_steps', 'rtc_max_guidance', 'denoise_compile_mode',
+            'compile_inference', 'parallel_sam', 'warmup_batches', 'warmup_repeats')
+    settings, cfg, config, norm = read_deployment(
+        args.config, overrides={key: getattr(args, key) for key in keys})
     if args.check_files:
         from safetensors import safe_open
         with safe_open(str(Path(settings['checkpoint']) / 'model.safetensors'), framework='pt') as weights:
@@ -168,14 +220,27 @@ def main():
                           'observation_offsets_frames': [-20, -10, 0],
                           'inference_profile': settings['inference_profile'],
                           'denoise_steps': settings['denoise_steps'],
-                          'rtc_max_guidance': settings['rtc_max_guidance']}), flush=True)
+                          'rtc_max_guidance': settings['rtc_max_guidance'],
+                          'cpu_threads': settings['cpu_threads'],
+                          'compile_inference': settings.get('compile_inference', False),
+                          'parallel_sam': settings.get('parallel_sam', True),
+                          'denoise_compile_mode': settings['denoise_compile_mode'],
+                          'warmup_batches': settings['warmup_batches'],
+                          'warmup_repeats': settings['warmup_repeats']}), flush=True)
         return
+    torch.set_num_threads(settings['cpu_threads'])
+    startup = time.monotonic()
     base = create_policy(settings, cfg, config, norm)
     online = OnlinePolicy(base, cfg, rtc_max_guidance=settings['rtc_max_guidance'],
                           parallel_sam=settings.get('parallel_sam', True),
                           compile_inference=settings.get('compile_inference', False),
                           latest_sam_features_only=settings.get('latest_sam_features_only', False))
-    warmup(online, norm)
+    warmup(online, norm, settings)
+    if args.warmup_only:
+        print(json.dumps({'warmup_only': 'passed', 'metadata': online.metadata}), flush=True)
+        return
+    print(json.dumps({'service_ready': True, 'startup_seconds': time.monotonic() - startup,
+                      'metadata': online.metadata}), flush=True)
     WebsocketPolicyServer(online, host=args.host or settings['host'],
                           port=args.port if args.port is not None else settings['port'],
                           metadata=online.metadata, single_client=True).serve_forever()

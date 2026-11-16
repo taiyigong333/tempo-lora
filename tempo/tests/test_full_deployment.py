@@ -91,8 +91,34 @@ class FullDeploymentTests(unittest.TestCase):
              patch('openpi.tempo_full.inference.warmup'), \
              patch('openpi.tempo_full.inference.WebsocketPolicyServer'), \
              patch('openpi.tempo_full.inference.OnlinePolicy') as online:
+            online.return_value.metadata = {}
             main()
             self.assertEqual(online.call_args.kwargs['rtc_max_guidance'], 5.)
+
+    def test_warmup_only_finishes_without_opening_port(self):
+        from unittest.mock import patch
+        from openpi.tempo_full.inference import main
+        with patch('sys.argv', ['inference', '--config', str(self.path), '--warmup-only']), \
+             patch('openpi.tempo_full.inference.create_policy'), \
+             patch('openpi.tempo_full.inference.warmup') as warm, \
+             patch('openpi.tempo_full.inference.WebsocketPolicyServer') as server, \
+             patch('openpi.tempo_full.inference.OnlinePolicy') as online:
+            online.return_value.metadata = {}
+            main()
+            warm.assert_called_once()
+            server.assert_not_called()
+
+    def test_runtime_overrides_take_priority_and_validate(self):
+        values = json.loads(self.path.read_text())
+        values.update(cpu_threads=8, compile_inference=True)
+        self.path.write_text(json.dumps(values))
+        settings, _, _, _ = read_deployment(self.path, overrides={
+            'cpu_threads': 2, 'compile_inference': False, 'denoise_steps': 3})
+        self.assertEqual(settings['cpu_threads'], 2)
+        self.assertEqual(settings['denoise_steps'], 3)
+        self.assertFalse(settings['compile_inference'])
+        with self.assertRaises(ValueError):
+            read_deployment(self.path, overrides={'parallel_sam': 'false'})
 
     def test_invalid_sampling_parameters_rejected(self):
         for key, value in (('denoise_steps', 0), ('denoise_steps', True),
