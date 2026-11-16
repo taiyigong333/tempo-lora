@@ -191,3 +191,25 @@ def test_dynamicvla_has_no_rtc_guidance_or_state_shift():
     result = policy.infer({**observation(), "mode": "dynamicvla"})
     np.testing.assert_array_equal(policy.policy.inputs["state"], observation()["state"])
     assert result["action_start_offset_steps"] == 0 and "sample_kwargs" not in policy.policy.kwargs
+
+
+def test_runtime_sampling_reaches_policy_and_is_reported():
+    policy = online()
+    result = policy.infer({**observation(), "sampling_parameters": {"denoise_steps": 3, "rtc_max_guidance": 2.5}})
+    assert policy.policy.kwargs["sample_kwargs"] == {"num_steps": 3}
+    assert result["sampling_parameters"] == {"denoise_steps": 3, "rtc_max_guidance": 2.5}
+    result = policy.infer({**observation(), "timestamp": 1 / 30, "mode": "rtc",
+                           "rtc_prefix": np.full((4, 7), .3, np.float32), "rtc_delay": 1,
+                           "sampling_parameters": {"denoise_steps": 4, "rtc_max_guidance": 2.5}})
+    assert policy.policy.kwargs["sample_kwargs"]["num_steps"] == 4
+    assert policy.policy.kwargs["sample_kwargs"]["rtc_max_guidance"] == 2.5
+
+
+@pytest.mark.parametrize("sampling", [{"denoise_steps": 0}, {"denoise_steps": True},
+    {"denoise_steps": 1.5}, {"rtc_max_guidance": 0}, {"rtc_max_guidance": float("nan")},
+    {"unknown": 1}, None])
+def test_invalid_sampling_preserves_online_history(sampling):
+    policy = online()
+    with pytest.raises(ValueError):
+        policy.infer({**observation(), "sampling_parameters": sampling})
+    assert policy.frame == -1 and policy.sam.count == 0

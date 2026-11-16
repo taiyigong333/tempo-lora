@@ -61,3 +61,26 @@ def select_runtime(cfg, task_id=None, mode=None):
     if not 0 <= lo < hi <= .10:
         raise ValueError("夹爪目标范围必须位于0至0.10米")
     return cfg
+
+
+def validate_sampling(values):
+    """采样参数与服务默认值分开保存，避免模型身份校验被界面覆盖。"""
+    if not isinstance(values, dict) or set(values) - {"denoise_steps", "rtc_max_guidance"}:
+        raise ValueError("不支持的模型采样参数")
+    if "denoise_steps" in values:
+        steps = values["denoise_steps"]
+        if type(steps) is not int or steps < 1:
+            raise ValueError("去噪次数必须为正整数")
+    if "rtc_max_guidance" in values:
+        beta = values["rtc_max_guidance"]
+        if type(beta) not in (int, float) or not np.isfinite(beta) or beta <= 0:
+            raise ValueError("RTC引导强度必须为有限正数")
+    return dict(values)
+
+
+def service_model_id(cfg):
+    if "model_id" in cfg["service"]:
+        return cfg["service"]["model_id"]
+    if cfg["model"]["config"] == "pi05_piperx_tempo_ut_lora":
+        return "lora10000"
+    return "clockwise4000" if cfg["model"]["step"] == 4000 else "clockwise5000"

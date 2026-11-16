@@ -1,0 +1,19 @@
+{
+  "name": "pi05_piperx_tempo_full_chunk30",
+  "step": 5000,
+  "checkpoint": "tempo_deploy/gpu/gpu_paper_chunk30_4gpu_20261114/policy/step_00005000",
+  "decoder": "tempo_deploy/gpu/gpu_paper_chunk30_4gpu_20261114/auxiliary/decoder/best.pt",
+  "tokenizer": "/data/gcj_data/fast/baseline/openpi/origin_checkpoint/big_vision/paligemma_tokenizer.model",
+  "sam2_repo": "/data/gcj_data/fast/baseline/tempo/trained_model/cache/sam2",
+  "sam2_checkpoint": "/data/gcj_data/fast/baseline/tempo/origin_checkpoint/sam2.1_hiera_tiny.pt",
+  "prompt": "grab the rotating red square",
+  "host": "192.168.50.2",
+  "port": 8002,
+  "denoise_steps": 5,
+  "parallel_sam": true,
+  "compile_inference": true,
+  "skip_missing_cameras": true,
+  "latest_sam_features_only": true,
+  "inference_profile": "rtc_paper",
+  "rtc_max_guidance": 5.0
+}

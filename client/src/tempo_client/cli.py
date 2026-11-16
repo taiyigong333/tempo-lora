@@ -47,7 +47,7 @@ def report(result, frames):
             "actions": result["actions"].tolist(), "round_trip_ms": result["round_trip_ms"],
             "end_to_end_ms": result.get("end_to_end_ms"),
             "feedback_ingest_ms": result.get("feedback_ingest_ms"),
-            "policy_timing": result.get("policy_timing"), "robot_commands": 0}
+            "policy_timing": result.get("policy_timing"), "sampling_parameters": result.get("sampling_parameters"), "robot_commands": 0}
 
 
 def main():

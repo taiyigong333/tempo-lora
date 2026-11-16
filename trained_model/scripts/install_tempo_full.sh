@@ -15,6 +15,8 @@ for relative in ('tempo/src', 'tempo/tools', 'tempo/packages/openpi-client/src')
     shutil.copytree(source / relative, destination / relative, dirs_exist_ok=True,
                     ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
 files = {
+    'trained_model/scripts/manage_model_service.py': 'trained_model/scripts/manage_model_service.py',
+    'trained_model/config_use/deployment_full_all393.json': 'trained_model/deployment_all393.json',
     'trained_model/scripts/serve_tempo_full.sh': 'trained_model/scripts/serve_wired.sh',
     'trained_model/scripts/start_tempo_full_service.sh': 'trained_model/scripts/start_service.sh',
     'trained_model/config_use/deployment_full.json': 'trained_model/deployment.json',

@@ -15,7 +15,7 @@ from tempo_client.cli import DEFAULT_CONFIG, load_config, replay_frames, report
 from tempo_client.cameras import CameraStream
 from tempo_client.live import LiveFeedback
 from tempo_client.transport import Client
-from tempo_client.settings import select_runtime
+from tempo_client.settings import select_runtime, service_model_id, validate_sampling
 from tempo_client.robot import Robot
 from tempo_client.control import InferenceRun, Plan, Plans
 from tempo_client.delay import DelayEstimator
@@ -40,7 +40,7 @@ class SessionWorker:
 
     def start(self, mode, config_path, *, replay_path=None, duration=10, batch_size=4, log_root=None,
               task_id=None, inference_mode=None, execute=False, motion_confirmed=False, home_before=True,
-              parameters=None):
+              parameters=None, sampling=None):
         if self.thread is not None and self.thread.is_alive():
             raise RuntimeError("请等待当前任务结束")
         if self.robot is not None and mode != "release":
@@ -48,7 +48,7 @@ class SessionWorker:
         if execute and (mode != "live" or motion_confirmed is not True):
             raise ValueError("实机执行需要本轮现场确认")
         options = {"task_id": task_id, "inference_mode": inference_mode, "execute": bool(execute),
-                   "home_before": bool(home_before), "parameters": parameters or {}}
+                   "home_before": bool(home_before), "parameters": parameters or {}, "sampling": sampling or {}}
         self.cancel.clear()
         self.thread = threading.Thread(target=self._run, args=(mode, config_path, replay_path,
             duration, batch_size, log_root, options), daemon=True, name="tempo-gui-session")
@@ -74,7 +74,7 @@ class SessionWorker:
         self._check_cancel()
         self.client = Client(cfg)
         self._check_cancel()
-        self.events.put(("metadata", {"local_ip": self.client.local_ip, **self.client.metadata}))
+        self.events.put(("metadata", {"local_ip": self.client.local_ip, "selected_model_id": service_model_id(cfg) if cfg.get("model") else None, **self.client.metadata}))
 
     def take_preview(self):
         # UI只取最新预览，空闲时未展示的帧直接覆盖，事件队列不积累画面。
@@ -137,26 +137,20 @@ class SessionWorker:
         self.events.put(("camera_status", f"相机持续开流 · PID {info['process_id']} · " + ("复用" if reused else "首次打开")))
         return info
 
-    def _start_service(self, cfg):
+    def _manage_service(self, cfg, action):
         service = cfg["service"]
         project = shlex.quote(service["project_dir"])
-        session = shlex.quote(service["tmux_session"])
-        launch = shlex.quote("exec bash trained_model/scripts/serve_wired.sh >> trained_model/logs/serve_wired.log 2>&1")
+        model_id = shlex.quote(service_model_id(cfg))
         script = (f"set -eu\ncd {project}\n"
-                  f"if ! tmux has-session -t ={session} 2>/dev/null; then\n"
-                  f"  tmux new-session -d -s {session} -c {project} {launch}\nfi\n")
-        if 'profile' in service:
-            # 同一GPU按配置切换单个TEMPO服务，配置参数由服务端白名单解析。
-            profile = shlex.quote(service['profile'])
-            script = f"set -eu\ncd {project}\nbash trained_model/scripts/start_service.sh {profile}\n"
-        self.events.put(("status", "正在通过有线SSH检查并启动模型服务"))
-        # SSH仅管理Tempo自己的tmux会话，模型加载在远端后台继续。
+                  f"python3 trained_model/scripts/manage_model_service.py {action} {model_id}\n")
+        self.events.put(("status", {"start": "正在启用或切换模型", "stop": "正在关闭模型服务", "status": "正在查询模型状态"}[action]))
+        # 后台SSH只执行管理命令，权重预热由独立服务继续完成。
         with subprocess.Popen(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
                                service["ssh_host"], "bash -s"], stdin=subprocess.PIPE,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as process:
             process.stdin.write(script)
             process.stdin.close()
-            deadline = time.monotonic() + 20
+            deadline = time.monotonic() + 40
             while process.poll() is None:
                 if self.cancel.wait(.1) or time.monotonic() > deadline:
                     process.terminate()
@@ -165,20 +159,36 @@ class SessionWorker:
                     except subprocess.TimeoutExpired:
                         process.kill()
                     self._check_cancel()
-                    raise TimeoutError("远端服务管理命令超时")
+                    raise TimeoutError("远端模型管理命令超时")
             message = process.stdout.read()
+            try:
+                result = json.loads(message.strip().splitlines()[-1])
+            except (ValueError, IndexError):
+                raise RuntimeError("远端模型管理响应无效 " + message.strip())
             if process.returncode:
-                raise RuntimeError("远端服务启动失败 " + message.strip())
-        deadline = time.monotonic() + service["startup_timeout_s"]
-        self.events.put(("status", "等待模型服务就绪"))
+                raise RuntimeError(result.get("error", message.strip()))
+        self.events.put(("service_state", result))
+        return result
+
+    def _start_service(self, cfg):
+        self._manage_service(cfg, "start")
+        deadline = time.monotonic() + cfg["service"]["startup_timeout_s"]
+        check_at = time.monotonic() + 10
+        self.events.put(("status", "等待模型预热与有线握手"))
         while time.monotonic() < deadline:
             self._check_cancel()
             try:
                 self._connect(cfg)
                 return
             except OSError:
+                if time.monotonic() >= check_at:
+                    state = self._manage_service(cfg, "status")
+                    if not state["selected_running"]:
+                        raise RuntimeError("所选模型在加载期间退出，请检查远端模型日志")
+                    check_at = time.monotonic() + 10
+                    self.events.put(("status", "模型进程运行中，等待预热与有线握手"))
                 self.cancel.wait(2)
-        raise TimeoutError("模型服务启动超过配置时限，请查看4090服务日志")
+        raise TimeoutError("模型服务启动超过配置时限，请查看4090模型日志")
 
     def _predict(self, frames, stream, summary, cfg=None, prefix=None, *, future_state=None, future_state_offset_steps=0):
         self._check_cancel()
@@ -214,6 +224,7 @@ class SessionWorker:
                 summary["outcome"] = "completed"
                 return
             cfg = load_config(config_path)
+            cfg["sampling"] = validate_sampling(options.get("sampling") or cfg.get("sampling", {}))
             if mode in ("live", "replay") and "task_catalog" in cfg:
                 cfg["inference"].update(options["parameters"])
                 cfg = select_runtime(cfg, options["task_id"], options["inference_mode"])
@@ -225,6 +236,10 @@ class SessionWorker:
                 self.events.put(("status", "正在开启持续相机流"))
                 summary["camera_stream"] = self._prepare_cameras(cfg)
                 self._check_cancel()
+                summary["outcome"] = "completed"
+                return
+            if mode in ("service_stop", "service_status"):
+                summary["service_state"] = self._manage_service(cfg, "stop" if mode == "service_stop" else "status")
                 summary["outcome"] = "completed"
                 return
             self.events.put(("status", "正在连接有线推理服务"))

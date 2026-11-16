@@ -1,0 +1,13 @@
+models:
+  - id: lora10000
+    label: LoRA · 393条 · step10000
+    config: piperx.yaml
+  - id: all3935000
+    label: 全量 · 393条 · step5000
+    config: piperx_full_all393.yaml
+  - id: clockwise4000
+    label: 顺时针 · batch2/3/4 · step4000
+    config: piperx_full_step4000.yaml
+  - id: clockwise5000
+    label: 顺时针 · batch2/3/4 · step5000
+    config: piperx_full_rtc_paper.yaml

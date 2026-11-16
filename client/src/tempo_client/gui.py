@@ -10,11 +10,12 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 import numpy as np
+import yaml
 from PIL import Image, ImageTk
 
 from tempo_client.cli import DEFAULT_CONFIG, load_config
 from tempo_client.session import SessionWorker
-from tempo_client.settings import MODE_LABELS, select_runtime
+from tempo_client.settings import MODE_LABELS, select_runtime, service_model_id, validate_sampling
 
 
 class TempoApp:
@@ -37,6 +38,14 @@ class TempoApp:
         self.execute_steps = tk.StringVar(value="1")
         self.ensemble_decay = tk.StringVar(value="0.05")
         self.rtc_min_steps = tk.StringVar(value="1")
+        self.model_label = tk.StringVar()
+        self.model_choices = []
+        self.denoise_steps = tk.StringVar(value="5")
+        self.rtc_guidance = tk.StringVar(value="5")
+        self.delay_method = tk.StringVar(value="window_max")
+        self.delay_buffer = tk.StringVar(value="10")
+        self.initial_delay = tk.StringVar(value="0")
+        self.delay_margin = tk.StringVar(value="1")
         self.selection_info = tk.StringVar()
         self.violation = tk.StringVar(value="目标检查信息将在推理时显示")
         self.task_ids = []
@@ -99,12 +108,21 @@ class TempoApp:
         controls = ttk.LabelFrame(page, text="任务、推理方式与开始", padding=12)
         controls.grid(row=3, column=0, sticky="ew", pady=(0, 12))
         controls.columnconfigure(1, weight=1)
-        ttk.Label(controls, text="配置文件").grid(row=0, column=0, sticky="w", padx=(0, 10))
+        model_bar = ttk.Frame(controls)
+        model_bar.grid(row=0, column=0, columnspan=7, sticky="w", pady=(0, 10))
+        ttk.Label(model_bar, text="模型").grid(row=0, column=0, padx=(0, 10))
+        self.model_box = ttk.Combobox(model_bar, textvariable=self.model_label, state="readonly", width=37)
+        self.model_box.grid(row=0, column=1, padx=(0, 12))
+        self.model_box.bind("<<ComboboxSelected>>", self._select_model)
+        self.service_start_button = self._button(model_bar, "启用／切换模型", lambda: self.start("service"), row=0, column=2, padx=(0, 8))
+        self.service_stop_button = self._button(model_bar, "停止模型服务", lambda: self.start("service_stop"), row=0, column=3, padx=(0, 8))
+        self.service_status_button = self._button(model_bar, "模型状态", lambda: self.start("service_status"), row=0, column=4)
+        ttk.Label(controls, text="配置文件").grid(row=1, column=0, sticky="w", padx=(0, 10))
         self.config_entry = ttk.Entry(controls, textvariable=self.config_path)
-        self.config_entry.grid(row=0, column=1, columnspan=5, sticky="ew")
-        self._button(controls, "选择配置", self._select_config, row=0, column=6, padx=(10, 0))
+        self.config_entry.grid(row=1, column=1, columnspan=5, sticky="ew")
+        self._button(controls, "选择配置", self._select_config, row=1, column=6, padx=(10, 0))
         selection = ttk.Frame(controls)
-        selection.grid(row=1, column=0, columnspan=7, sticky="ew", pady=(10, 6))
+        selection.grid(row=2, column=0, columnspan=7, sticky="ew", pady=(10, 6))
         ttk.Label(selection, text="任务").pack(side="left", padx=(0, 8))
         self.task_box = ttk.Combobox(selection, textvariable=self.task_label, state="readonly", width=24)
         self.task_box.pack(side="left", padx=(0, 16))
@@ -119,24 +137,24 @@ class TempoApp:
         self.home_check = ttk.Checkbutton(selection, text="开始前低速归位", variable=self.home_before, state="disabled")
         self.home_check.pack(side="left")
         ttk.Label(controls, textvariable=self.selection_info, style="Muted.TLabel").grid(
-            row=2, column=0, columnspan=7, sticky="w", pady=(0, 8))
+            row=3, column=0, columnspan=7, sticky="w", pady=(0, 8))
         toolbar = ttk.Frame(controls)
-        toolbar.grid(row=3, column=0, columnspan=7, sticky="w", pady=(0, 10))
+        toolbar.grid(row=4, column=0, columnspan=7, sticky="w", pady=(0, 10))
         self.start_button = ttk.Button(toolbar, text="开始推理 F5", style="Start.TButton", command=lambda: self.start("live"))
         self.start_button.grid(row=0, column=0, padx=(0, 10))
         self.action_buttons.append(self.start_button)
         self.stop_button = ttk.Button(toolbar, text="停止并保持 Esc", command=self.stop, state="disabled")
         self.stop_button.grid(row=0, column=1, padx=(0, 12))
-        for index, (text, mode) in enumerate((("启动模型服务", "service"), ("检查连接", "probe"),
+        for index, (text, mode) in enumerate((("检查连接", "probe"),
                                              ("录制数据回放", "replay"), ("开启相机", "camera"), ("释放相机", "release"))):
             self._button(toolbar, text, lambda mode=mode: self.start(mode), row=0, column=index+2, padx=(0, 6))
         ttk.Button(toolbar, text="打开日志", command=self.open_logs).grid(row=0, column=7)
-        ttk.Label(controls, text="回放数据").grid(row=4, column=0, sticky="w", padx=(0, 10))
+        ttk.Label(controls, text="回放数据").grid(row=5, column=0, sticky="w", padx=(0, 10))
         self.replay_entry = ttk.Entry(controls, textvariable=self.replay_path)
-        self.replay_entry.grid(row=4, column=1, columnspan=5, sticky="ew")
-        self._button(controls, "选择NPZ", self._select_replay, row=4, column=6, padx=(10, 0))
+        self.replay_entry.grid(row=5, column=1, columnspan=5, sticky="ew")
+        self._button(controls, "选择NPZ", self._select_replay, row=5, column=6, padx=(10, 0))
         options = ttk.Frame(controls)
-        options.grid(row=5, column=0, columnspan=7, sticky="w", pady=(10, 0))
+        options.grid(row=6, column=0, columnspan=7, sticky="w", pady=(10, 0))
         entries = []
         for label, variable, low, high, width in (
                 ("运行秒数（0持续）", self.duration, 0, 3600, 6),
@@ -149,10 +167,28 @@ class TempoApp:
             entry.pack(side="left", padx=(6, 14))
             entries.append(entry)
         self.duration_entry, self.steps_entry, self.decay_entry, self.rtc_entry, self.batch_entry = entries
+        sampling = ttk.Frame(controls)
+        sampling.grid(row=7, column=0, columnspan=7, sticky="w", pady=(10, 0))
+        for column, (label, variable, low, high) in enumerate((
+                ("去噪次数", self.denoise_steps, 1, 100),
+                ("RTC引导强度", self.rtc_guidance, .1, 100),
+                ("延迟窗口", self.delay_buffer, 1, 120),
+                ("初始延迟步", self.initial_delay, 0, 29),
+                ("延迟余量步", self.delay_margin, 0, 29))):
+            ttk.Label(sampling, text=label).grid(row=0, column=2*column, padx=(0, 4))
+            entry = ttk.Spinbox(sampling, from_=low, to=high, width=4, textvariable=variable)
+            entry.grid(row=0, column=2*column+1, padx=(0, 12))
+            entries.append(entry)
+        ttk.Label(sampling, text="延迟估计").grid(row=1, column=0, sticky="w", pady=(5, 0))
+        self.delay_box = ttk.Combobox(sampling, textvariable=self.delay_method, state="readonly", width=14,
+                                      values=("window_max", "decayed_peak"))
+        self.delay_box.grid(row=1, column=1, columnspan=2, sticky="w", pady=(5, 0))
+        ttk.Label(sampling, text="参数在下一轮推理生效，响应日志记录实际采样值", style="Muted.TLabel").grid(
+            row=1, column=3, columnspan=7, sticky="w", pady=(5, 0))
         ttk.Label(controls, textvariable=self.camera_status, style="Muted.TLabel").grid(
-            row=6, column=0, columnspan=7, sticky="w", pady=(8, 0))
+            row=8, column=0, columnspan=7, sticky="w", pady=(8, 0))
         ttk.Label(controls, textvariable=self.violation, style="Muted.TLabel").grid(
-            row=7, column=0, columnspan=7, sticky="w", pady=(4, 0))
+            row=9, column=0, columnspan=7, sticky="w", pady=(4, 0))
 
         views = ttk.Frame(page)
         views.grid(row=4, column=0, sticky="ew", pady=(0, 12))
@@ -195,7 +231,22 @@ class TempoApp:
         ttk.Label(footer, textvariable=self.status).pack(side="left")
         ttk.Label(footer, textvariable=self.progress, style="Muted.TLabel").pack(side="right")
         self.inputs = [self.config_entry, self.replay_entry, *entries, self.execute_check]
-        self.choice_inputs = [self.task_box, self.mode_box]
+        self.choice_inputs = [self.task_box, self.mode_box, self.model_box, self.delay_box]
+
+    def _select_model(self, event=None):
+        selected = next((row for row in self.model_choices if row["label"] == self.model_label.get()), None)
+        if selected is None:
+            return
+        self.config_path.set(str(Path(__file__).resolve().parents[2] / "configs" / selected["config"]))
+        self.execute.set(False)
+        self._execution_changed()
+        self._load_choices()
+        self.model.set("已选择模型，点击启用／切换后检查连接")
+        self._append("选择模型 " + selected["label"])
+
+    def _sampling(self):
+        return validate_sampling({"denoise_steps": int(self.denoise_steps.get()),
+                                  "rtc_max_guidance": float(self.rtc_guidance.get())})
 
     def _select_config(self):
         path = filedialog.askopenfilename(parent=self.root, title="选择Tempo客户端配置", filetypes=[("YAML配置", "*.yaml *.yml")])
@@ -206,6 +257,16 @@ class TempoApp:
     def _load_choices(self):
         try:
             cfg = load_config(self.config_path.get())
+            catalog = Path(__file__).resolve().parents[2] / "configs/models.yaml"
+            self.model_choices = yaml.safe_load(catalog.read_text())["models"] if catalog.exists() else []
+            self.model_box.configure(values=[row["label"] for row in self.model_choices])
+            self.model_label.set(next((row["label"] for row in self.model_choices if row["id"] == service_model_id(cfg)), "自定义配置"))
+            self.denoise_steps.set(str(cfg["model"].get("denoise_steps", 10)))
+            self.rtc_guidance.set(str(cfg["model"].get("rtc_max_guidance", 10)))
+            self.delay_method.set(cfg["inference"].get("rtc_delay_estimator", "decayed_peak"))
+            self.delay_buffer.set(str(cfg["inference"].get("rtc_delay_buffer_size", 10)))
+            self.initial_delay.set(str(cfg["inference"].get("rtc_initial_delay_steps", 0)))
+            self.delay_margin.set(str(cfg["inference"].get("rtc_delay_margin_steps", 1)))
             tasks = cfg["task_catalog"]["tasks"]
             self.task_ids = [task["id"] for task in tasks]
             self.task_box.configure(values=[task["label"] for task in tasks])
@@ -283,7 +344,8 @@ class TempoApp:
             runtime = {}
             if mode != "release":
                 cfg = load_config(self.config_path.get())
-                duration, batch = float(self.duration.get()), int(self.batch_size.get())
+                if mode in ("live", "replay"):
+                    duration, batch = float(self.duration.get()), int(self.batch_size.get())
                 if not np.isfinite(duration) or not 0 <= duration <= 3600 or not 1 <= batch <= 60:
                     raise ValueError("时长需为0至3600秒，0表示持续运行；每批反馈需为1至60帧")
                 if mode == "replay" and not Path(self.replay_path.get()).is_file():
@@ -292,7 +354,11 @@ class TempoApp:
                 if mode in ("live", "replay"):
                     parameters = {"execute_steps": int(self.execute_steps.get()),
                                   "ensemble_decay": float(self.ensemble_decay.get()),
-                                  "rtc_min_execute_steps": int(self.rtc_min_steps.get())}
+                                  "rtc_min_execute_steps": int(self.rtc_min_steps.get()),
+                                  "rtc_delay_estimator": self.delay_method.get(),
+                                  "rtc_delay_buffer_size": int(self.delay_buffer.get()),
+                                  "rtc_initial_delay_steps": int(self.initial_delay.get()),
+                                  "rtc_delay_margin_steps": int(self.delay_margin.get())}
                     cfg["inference"].update(parameters)
                     cfg = select_runtime(cfg, self._selected_task(), self._selected_mode())
                     execute = mode == "live" and self.execute.get()
@@ -307,7 +373,9 @@ class TempoApp:
                             return
                     runtime = {"task_id": cfg["task"]["id"], "inference_mode": cfg["inference"]["mode"],
                                "execute": execute, "motion_confirmed": execute,
-                               "home_before": self.home_before.get(), "parameters": parameters}
+                               "home_before": self.home_before.get(), "parameters": parameters, "sampling": self._sampling()}
+            if mode in ("service", "probe"):
+                runtime["sampling"] = self._sampling()
             self.worker.start(mode, self.config_path.get(), replay_path=self.replay_path.get(),
                               duration=duration, batch_size=batch, **runtime)
         except Exception as error:
@@ -326,7 +394,7 @@ class TempoApp:
             self._clear_previews("等待回放图像")
         self.status.set("正在启动任务")
         self._append(f"开始任务 {mode}")
-        if runtime:
+        if mode in ("live", "replay"):
             self._append(f"任务 {self.task_label.get()} · {self.mode_label.get()} · " + ("现场确认实机执行" if runtime["execute"] else "只读推理"))
 
     def stop(self):
@@ -348,13 +416,22 @@ class TempoApp:
         if kind == "status":
             self.status.set(value)
             self._append(value)
+        elif kind == "service_state":
+            labels = {row["id"]: row["label"] for row in self.model_choices}
+            running = value["running_models"]
+            text = "模型服务已停止" if not running else "；".join(
+                labels.get(row["model_id"], row["model_id"]) + (" · 就绪" if row["ready"] else " · 预热中")
+                for row in running)
+            self.model.set(text)
+            self._append(text)
         elif kind == "camera_status":
             self.camera_status.set(value)
             self._append(value)
             if value == "相机已释放":
                 self._clear_previews(value)
         elif kind == "metadata":
-            self.model.set(f"TEMPO · {value['step']} 步 · {value['action_horizon']}×{value['native_action_dim']}")
+            label = next((row["label"] for row in self.model_choices if row["id"] == value.get("selected_model_id")), "TEMPO")
+            self.model.set(f"{label} · {value['step']} 步 · {value['action_horizon']}×{value['native_action_dim']}")
             self._append(f"有线握手通过，模型 {value['checkpoint']}")
         elif kind == "log_dir":
             self.log_dir = Path(value)
@@ -375,6 +452,8 @@ class TempoApp:
             self.prediction_table.delete(*self.prediction_table.get_children())
             for index, target in enumerate(value["actions"]):
                 self.prediction_table.insert("", "end", values=(index + 1, *[f"{x:.5f}" for x in target]))
+            if value.get("sampling_parameters"):
+                self.selection_info.set(f"实际采样 · 去噪{value['sampling_parameters']['denoise_steps']}次 · RTC引导{value['sampling_parameters']['rtc_max_guidance']:g}")
             self._append(f"批次 {self.batch_count}，{value['feedback_frames']} 帧反馈，往返 {value['round_trip_ms']:.1f} ms")
         elif kind == "control":
             self.target_count += 1

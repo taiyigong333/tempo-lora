@@ -1,5 +1,7 @@
 # 顺时针step4000与新增推理模式
 
+客户端已提供统一模型选择、启停与参数调整，操作说明见[客户端模型与参数管理](client_model_control_20261116.md)。
+
 ## 快速使用
 
 在PiperX桌面终端进入项目目录，选择需要的模型入口。
@@ -14,7 +16,7 @@ bash run_gui_full_dynamicvla.sh
 bash run_gui_full_vlash.sh
 ```
 
-1. 点击“启动模型服务”，等待预热完成，再点击“检查连接”，确认界面显示所选step4000或step5000。
+1. 点击“启用／切换模型”，等待预热完成，再点击“检查连接”，确认界面显示所选step4000或step5000。
 2. 在“推理方式”下拉框选择需要的模式。切换推理方式后开始新一轮即可，切换检查点需先停止本轮并使用对应配置重新启动模型服务。
 3. 首次运行使用默认只读方式，点击“开始推理 F5”，查看双相机、当前反馈、预测和事件日志。
 4. 实机执行时勾选“允许实机运动”，按需选择“开始前低速归位”，点击开始后完成本轮现场确认。
@@ -27,7 +29,7 @@ bash run_gui.sh --config client/configs/piperx_full_step4000_dynamicvla.yaml
 bash run_gui.sh --config client/configs/piperx_full_step4000_vlash.yaml
 ```
 
-当前8002模型服务已按用户要求关闭，下次使用需要先点击“启动模型服务”。连接时会校验检查点步数、动作表示、帧率及采样参数。运行日志保存在`client/logs/gui`。
+当前8002模型服务已按用户要求关闭，下次使用需要先点击“启用／切换模型”。连接时会校验检查点步数、动作表示、帧率及采样参数。运行日志保存在`client/logs/gui`。
 
 ## 模型来源和配置
 
@@ -43,7 +45,7 @@ bash run_gui.sh --config client/configs/piperx_full_step4000_vlash.yaml
 
 ## 入口
 
-PiperX项目目录为`/home/cv/gcj/project/baseline_fast/tempo-lora`。step4000图形入口如下，打开后使用“启动模型服务”切换到所选模型，再开始本轮推理。
+PiperX项目目录为`/home/cv/gcj/project/baseline_fast/tempo-lora`。step4000图形入口如下，打开后使用“启用／切换模型”切换到所选模型，再开始本轮推理。
 
 ```bash
 cd /home/cv/gcj/project/baseline_fast/tempo-lora

@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -138,6 +138,14 @@ class SessionTests(unittest.TestCase):
         with patch.object(source, "_connect_arm"), patch.object(source, "_start"):
             with self.assertRaises(InterruptedError):
                 source.__enter__()
+
+    def test_service_loading_exit_is_reported_before_full_timeout(self):
+        self.worker._manage_service = Mock(side_effect=[{}, {"selected_running": False}])
+        self.worker._connect = Mock(side_effect=ConnectionRefusedError())
+        with patch("tempo_client.session.time.monotonic", side_effect=[0, 0, 1, 11]):
+            with self.assertRaisesRegex(RuntimeError, "加载期间退出"):
+                self.worker._start_service({"service": {"startup_timeout_s": 600}})
+        self.assertEqual(self.worker._manage_service.call_args.args[1], "status")
 
 
 if __name__ == "__main__":

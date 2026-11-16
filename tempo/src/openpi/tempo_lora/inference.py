@@ -179,7 +179,17 @@ class OnlinePolicy(BasePolicy):
                 raise ValueError("VLASH未来状态或时间偏移不合法")
         elif future_offset != 0:
             raise ValueError("VLASH时间偏移需要对应的未来状态")
-        sampling = {}
+        runtime_sampling = obs.get("sampling_parameters", {})
+        if not isinstance(runtime_sampling, dict) or set(runtime_sampling) - {"denoise_steps", "rtc_max_guidance"}:
+            raise ValueError("不支持的模型采样参数")
+        steps = runtime_sampling.get("denoise_steps", self.policy.metadata.get("denoise_steps", self.cfg.get("inference", {}).get("denoise_steps", 10)))
+        beta = runtime_sampling.get("rtc_max_guidance", self.rtc_max_guidance)
+        if type(steps) is not int or steps < 1:
+            raise ValueError("去噪次数必须为正整数")
+        if type(beta) not in (int, float) or not np.isfinite(beta) or beta <= 0:
+            raise ValueError("RTC引导强度必须为有限正数")
+        # 仅覆盖本次采样，默认调用仍沿用检查点与服务配置。
+        sampling = {"num_steps": steps} if "denoise_steps" in runtime_sampling else {}
         prefix = obs.get("rtc_prefix")
         if prefix is not None:
             from openpi.tempo_lora.rtc import prefix_weights
@@ -197,7 +207,7 @@ class OnlinePolicy(BasePolicy):
             padded[0, :len(prefix), :dim] = target
             mask = np.zeros_like(padded)
             mask[0, :, :dim] = weights[:, None]
-            sampling = {"rtc_prefix": padded, "rtc_weights": mask, "rtc_max_guidance": self.rtc_max_guidance}
+            sampling.update(rtc_prefix=padded, rtc_weights=mask, rtc_max_guidance=float(beta))
         if new_episode:
             self.reset()
             self.episode = obs["episode_id"]
@@ -227,6 +237,7 @@ class OnlinePolicy(BasePolicy):
         result["feedback_ingest_ms"] = ingest_ms
         result["mode"] = mode
         result["rtc_prefix_length"] = 0 if prefix is None else len(prefix)
+        result["sampling_parameters"] = {"denoise_steps": steps, "rtc_max_guidance": float(beta)}
         result["action_start_offset_steps"] = future_offset
         if mode == "vlash":
             result["future_state_source"] = "action_plan" if future_state is not None else "measured_feedback"
@@ -234,7 +245,8 @@ class OnlinePolicy(BasePolicy):
 
     @property
     def metadata(self):
-        return {**self.policy.metadata, "rtc_max_guidance": self.rtc_max_guidance,
+        return {**self.policy.metadata, "runtime_sampling_parameters": ["denoise_steps", "rtc_max_guidance"],
+                "rtc_max_guidance": self.rtc_max_guidance,
                 "parallel_sam": self.parallel_sam,
                 "modes": ["tempo", "temporal_ensemble", "rtc", "dynamicvla", "vlash"],
                 "inference_algorithms": {"dynamicvla": "continuous_latency_aware_streaming",

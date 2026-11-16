@@ -114,6 +114,46 @@ class GuiTests(unittest.TestCase):
         error.assert_called_once()
         self.app.worker.start.assert_not_called()
 
+    def test_model_selection_changes_checkpoint_and_resets_motion(self):
+        selected = next(row for row in self.app.model_choices if row["id"] == "clockwise4000")
+        self.app.execute.set(True)
+        self.app.model_label.set(selected["label"])
+        self.app._select_model()
+        self.assertTrue(self.app.config_path.get().endswith("piperx_full_step4000.yaml"))
+        self.assertEqual(self.app.denoise_steps.get(), "5")
+        self.assertFalse(self.app.execute.get())
+        self.assertEqual(int(float(self.app.steps_entry["to"])), 30)
+
+    def test_sampling_and_delay_parameters_reach_background_worker(self):
+        self.app.worker.start = Mock()
+        self.app.denoise_steps.set("3")
+        self.app.rtc_guidance.set("2.5")
+        self.app.delay_method.set("window_max")
+        self.app.delay_buffer.set("7")
+        self.app.initial_delay.set("2")
+        self.app.delay_margin.set("3")
+        self.app.start("live")
+        kwargs = self.app.worker.start.call_args.kwargs
+        self.assertEqual(kwargs["sampling"], {"denoise_steps": 3, "rtc_max_guidance": 2.5})
+        self.assertEqual(kwargs["parameters"]["rtc_delay_buffer_size"], 7)
+        self.assertEqual(kwargs["parameters"]["rtc_initial_delay_steps"], 2)
+        self.assertEqual(kwargs["parameters"]["rtc_delay_margin_steps"], 3)
+
+    def test_service_stop_and_status_are_available_with_invalid_inference_duration(self):
+        self.app.worker.start = Mock()
+        self.app.duration.set("invalid")
+        self.app.start("service_stop")
+        self.assertEqual(self.app.worker.start.call_args.args[0], "service_stop")
+        self.app._set_busy(False)
+        self.app.start("service_status")
+        self.assertEqual(self.app.worker.start.call_args.args[0], "service_status")
+
+    def test_service_state_reports_actual_running_model(self):
+        self.app._handle("service_state", {"running_models": [{"model_id": "clockwise4000", "ready": True}]})
+        self.assertIn("step4000", self.app.model.get())
+        self.app._handle("service_state", {"running_models": []})
+        self.assertEqual(self.app.model.get(), "模型服务已停止")
+
 
 if __name__ == "__main__":
     unittest.main()

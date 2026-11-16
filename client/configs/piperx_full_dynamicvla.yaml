@@ -11,6 +11,7 @@ connection:
 model:
   config: pi05_piperx_tempo_full_chunk30
   step: 5000
+  checkpoint_contains: gpu_clockwise_b234_chunk30_4gpu_20261116/policy/step_00005000
   fps: 30
   action_horizon: 30
   action_dim: 7

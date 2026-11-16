@@ -104,6 +104,23 @@ class ClientTests(unittest.TestCase):
         client.ws.close.assert_called_once()
         self.assertIsNone(client.previous)
 
+    def test_runtime_sampling_is_sent_and_actual_values_are_verified(self):
+        client = Client.__new__(Client)
+        client.cfg = {"model": {"fps": 30, "action_horizon": 16, "action_dim": 7},
+                      "sampling": {"denoise_steps": 3, "rtc_max_guidance": 2.5}}
+        client.metadata = {"runtime_sampling_parameters": ["denoise_steps", "rtc_max_guidance"]}
+        client.previous, client.episode = None, "test"
+        client.packer, client.ws = Mock(), Mock()
+        client._receive = Mock(return_value={"actions": np.zeros((16, 7), np.float32),
+                                            "sampling_parameters": client.cfg["sampling"]})
+        client.infer([frame()])
+        request = client.packer.pack.call_args.args[0]
+        self.assertEqual(request["sampling_parameters"], client.cfg["sampling"])
+        client._receive.return_value["sampling_parameters"] = {"denoise_steps": 5, "rtc_max_guidance": 2.5}
+        with self.assertRaisesRegex(ValueError, "实际采样参数"):
+            client.infer([frame(1 / 30)])
+        client.ws.close.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,6 +7,7 @@ import uuid
 import numpy as np
 from openpi_client import msgpack_numpy
 from websockets.sync.client import connect
+from tempo_client.settings import validate_sampling
 
 
 def validate_frames(frames, fps, previous=None):
@@ -49,9 +50,15 @@ class Client:
                     or self.metadata.get("feedback_fps") != cfg["model"]["fps"]):
                 raise ValueError("服务器动作维度或反馈帧率不匹配")
             # 论文参数配置显式核验采样方式，防止连接到同权重的其他推理配置。
-            for key in ('inference_profile', 'denoise_steps', 'rtc_max_guidance'):
+            sampling = validate_sampling(cfg.get("sampling", {}))
+            if sampling and not self.metadata.get("runtime_sampling_parameters"):
+                raise ValueError("服务尚未支持客户端采样参数，请停止服务后重新启用")
+            for key in (() if sampling else ('inference_profile', 'denoise_steps', 'rtc_max_guidance')):
                 if key in cfg['model'] and self.metadata.get(key) != cfg['model'][key]:
                     raise ValueError(f'服务器推理参数不匹配 {key}: {self.metadata.get(key)}')
+            expected_checkpoint = cfg["model"].get("checkpoint_contains")
+            if expected_checkpoint and expected_checkpoint not in self.metadata.get("checkpoint", ""):
+                raise ValueError("服务器检查点来源与所选模型不匹配")
             self.local_ip = raw.getsockname()[0]
         except BaseException:
             self.close()
@@ -99,6 +106,11 @@ class Client:
         if mode not in ("tempo", "temporal_ensemble", "rtc", "dynamicvla", "vlash"):
             raise ValueError("推理模式不支持")
         request = {"episode_id": self.episode, "feedback": frames, "mode": mode}
+        sampling = validate_sampling(self.cfg.get("sampling", {}))
+        if sampling:
+            if not self.metadata.get("runtime_sampling_parameters"):
+                raise ValueError("服务尚未支持客户端采样参数，请重新启用模型加载新版服务")
+            request["sampling_parameters"] = sampling
         if type(future_state_offset_steps) is not int:
             raise ValueError("VLASH时间偏移必须为整数")
         if future_state is not None:
@@ -124,6 +136,8 @@ class Client:
         try:
             self.ws.send(self.packer.pack(request))
             result = self._receive()
+            if any(result.get("sampling_parameters", {}).get(key) != value for key, value in sampling.items()):
+                raise ValueError("服务端实际采样参数与客户端设置不一致")
             actions = np.asarray(result["actions"])
             expected = (self.cfg["model"]["action_horizon"], self.cfg["model"]["action_dim"])
             if actions.shape != expected or actions.dtype != np.float32 or not np.isfinite(actions).all():
