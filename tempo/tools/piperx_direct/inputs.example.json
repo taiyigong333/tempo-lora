@@ -1,0 +1,20 @@
+{
+  "dataset": {"train_episodes": 289, "validation_episodes": 0, "frames": 30285, "window": 30},
+  "history": {"frames": 90, "steps": 10, "source": "state", "fps": 30, "seconds": 3, "ends_at": "t-1", "bucket_frames": 9},
+  "dataset_root": "/path/to/dataset",
+  "split_path": "/path/to/split.json",
+  "norm_dir": "/path/to/norm",
+  "rgb_cache": "/path/to/rgb",
+  "sam2_cache": "/path/to/sam2",
+  "pretrained_dir": "/path/to/pi05_base_pytorch",
+  "tokenizer": "/path/to/paligemma_tokenizer.model",
+  "policy": {"steps": 5000, "global_batch": 128, "save_interval": 2000, "save_steps": [2000, 4000, 5000]},
+  "wandb": {"entity": "your-wandb-entity"},
+  "modelscope": {
+    "repo_id": "owner/dataset",
+    "repo_type": "dataset",
+    "token_file": "~/.cache/tempo_modelscope/token"
+  },
+  "remove_local_after_upload": false,
+  "upload_retry_seconds": 120
+}
