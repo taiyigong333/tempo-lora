@@ -21,9 +21,11 @@ from tools.precompute_sam2_tokens import read_video_rgb
 
 
 class SAM2Stream:
-    def __init__(self, model, device="cuda", precision="bfloat16", *, compile_model=False, latest_features_only=False):
+    def __init__(self, model, device="cuda", precision="bfloat16", *, compile_model=False, latest_features_only=False,
+                 full_pointer_span=False):
         self.model, self.device, self.precision = model, device, precision
         self.latest_features_only = latest_features_only
+        self.full_pointer_span = full_pointer_span
         self.model.requires_grad_(False)
         self.executor = None
         self.cuda_stream = None
@@ -53,10 +55,14 @@ class SAM2Stream:
             if return_features:
                 # 记忆编码仅依赖当前骨干特征与全帧mask，中间帧的读出不参与后续记忆。
                 # 每帧仍写入记忆，仅在需要融合的最后一帧执行记忆注意力读出。
+                num_frames = self.frame + 1
+                if self.full_pointer_span:
+                    # 训练片段皆长于 SAM2 指针上限。固定时间位置缩放，查找仍只读过去帧。
+                    num_frames = max(num_frames, self.model.max_obj_ptrs_in_encoder)
                 pix = self.model._prepare_memory_conditioned_features(
                     frame_idx=self.frame, is_init_cond_frame=self.frame == 0,
                     current_vision_feats=vf[-1:], current_vision_pos_embeds=vp[-1:], feat_sizes=sizes[-1:],
-                    output_dict=self.outputs, num_frames=self.frame + 1, track_in_reverse=False)
+                    output_dict=self.outputs, num_frames=num_frames, track_in_reverse=False)
                 latent = F.adaptive_avg_pool2d(pix, (8, 8))[0].float()
             memory, position = self.model._encode_new_memory(
                 current_vision_feats=vf, feat_sizes=sizes,

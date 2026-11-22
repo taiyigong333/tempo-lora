@@ -216,6 +216,29 @@ class CameraTests(unittest.TestCase):
         with self.assertRaises(CameraFrameError):
             stream.snapshot(time.time() + 1)
 
+    def test_training_grid_selects_nearest_received_frame_and_keeps_preview_causal(self):
+        self.cfg["live"]["camera_max_grid_error_s"] = .1
+        stream = CameraStream(self.cfg)
+        stream.started = True
+        stream.process = Mock()
+        stream.channel = Mock()
+        stream.channel.poll.return_value = False
+        stream.lock = threading.Lock()
+        stream.pixels = np.zeros((2, stream.capacity, 224, 224, 3), np.uint8)
+        stream.pixels[:, 1].fill(1)
+        stream.stamps = np.zeros((2, stream.capacity), np.float64)
+        stream.stamps[:, 0] = 10.0
+        with self.assertRaisesRegex(LookupError, "之后"):
+            stream.snapshot(10.02)
+        stream.stamps[:, 1] = 10.03
+        self.assertTrue(stream.snapshot(10.02)["images"]["head"].all())
+        self.assertFalse(stream.snapshot(10.01)["images"]["head"].any())
+        with patch("tempo_client.cameras.time.time", return_value=10.02):
+            self.assertFalse(stream.snapshot()["images"]["head"].any())
+        stream.stamps[:, :2] = (10., 10.25)
+        with self.assertRaisesRegex(CameraFrameError, "偏差过大"):
+            stream.snapshot(10.12)
+
     def test_busy_camera_error_identifies_device_and_cleanup(self):
         self.parameters.write_text('{"devices":{"front":{"configured_options":{}},"wrist":{"configured_options":{}}}}')
         cfg = copy.deepcopy(self.cfg["live"])

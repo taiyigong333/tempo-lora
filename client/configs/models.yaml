@@ -11,3 +11,9 @@ models:
   - id: clockwise5000
     label: 顺时针 · batch2/3/4 · step5000
     config: piperx_full_rtc_paper.yaml
+  - id: clockwise_hist90_5000
+    label: 顺时针 · 90帧 state · step5000
+    config: piperx_full_hist90_step5000.yaml
+  - id: clockwise_hist90_direct_2000
+    label: 顺时针 · 无 UVT · step2000
+    config: piperx_full_hist90_direct_step2000.yaml

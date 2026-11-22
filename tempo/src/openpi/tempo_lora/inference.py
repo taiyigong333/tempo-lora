@@ -70,24 +70,30 @@ def create_policy(checkpoint, *, pytorch_device=None, sample_kwargs=None, compil
 
 class OnlinePolicy(BasePolicy):
     def __init__(self, policy, cfg, *, sam_stream=None, rtc_max_guidance=10.0,
-                 parallel_sam=False, compile_inference=False, latest_sam_features_only=False):
+                 parallel_sam=False, compile_inference=False, latest_sam_features_only=False,
+                 sam2_full_pointer_span=False, skip_sam2=False):
         self.policy, self.cfg = policy, cfg
         if type(parallel_sam) is not bool:
             raise ValueError("parallel_sam必须为布尔值")
-        self.parallel_sam = parallel_sam
+        if type(skip_sam2) is not bool or (skip_sam2 and sam_stream is not None):
+            raise ValueError("跳过 SAM2 时不能传入 SAM2 流")
+        self.parallel_sam = parallel_sam and not skip_sam2
         if type(latest_sam_features_only) is not bool:
             raise ValueError("latest_sam_features_only必须为布尔值")
         if not np.isfinite(rtc_max_guidance) or rtc_max_guidance <= 0:
             raise ValueError("RTC引导上限必须为有限正数")
         self.rtc_max_guidance = float(rtc_max_guidance)
-        if sam_stream is None:
+        if sam_stream is None and not skip_sam2:
             from openpi.tempo_lora.sam import SAM2Stream, build_sam2_tiny
             sam_stream = SAM2Stream(build_sam2_tiny("cuda"), precision=cfg["model"]["dtype"],
-                                    compile_model=compile_inference, latest_features_only=latest_sam_features_only)
+                                    compile_model=compile_inference, latest_features_only=latest_sam_features_only,
+                                    full_pointer_span=sam2_full_pointer_span)
         self.sam = sam_stream
+        self.sam2_full_pointer_span = sam2_full_pointer_span
         mc, dc = cfg["model"], cfg["data"]
         self.history_width = round(dc["fps"] * dc["action_history_seconds"] / mc["action_history_steps"])
         self.max_history = self.history_width * mc["action_history_steps"]
+        self.history_source = dc.get("action_history_source", "action")
         self.image_stride = round(mc["obs_history_stride_s"] * dc["fps"])
         self.image_length = (mc["obs_history"] - 1) * self.image_stride + 1
         self.reset()
@@ -99,7 +105,8 @@ class OnlinePolicy(BasePolicy):
         self.origin_timestamp = None
         self.feedback = deque(maxlen=self.max_history)
         self.images = deque(maxlen=self.image_length)
-        self.sam.reset()
+        if self.sam is not None:
+            self.sam.reset()
         self.latest_tokens = None
 
     def ingest(self, observation, *, encode_sam=True):
@@ -119,24 +126,28 @@ class OnlinePolicy(BasePolicy):
             raise ValueError("在线图像应与转换数据一致，为 224×224 RGB uint8 等比补黑边图像")
         self.frame += 1
         if self.frame > 0:
-            # state[t] 对应 action[t-1]，仅在该反馈实际到达后添加历史。
-            self.feedback.append(state.copy())
+            # state 模型只看到截至 t-1 的实测反馈。旧模型仍用 state[t] 代理 action[t-1]。
+            previous = self.last_state if self.history_source == "state" else state
+            self.feedback.append(previous.copy())
         self.images.append({key: value.copy() for key, value in images.items()})
-        if encode_sam:
+        if encode_sam and self.sam is not None:
             self.latest_tokens = self.sam.step(images["head"]).transpose(1, 2, 0).reshape(64, 256)
         self.last_state = state.copy()
         self.last_timestamp = timestamp
 
     def inputs(self, *, sam2_tokens=None):
         mc = self.cfg["model"]
-        actions = np.array(self.feedback, np.float32).reshape(-1, self.cfg["data"]["action_dim"])
-        history, padding = history_buckets(actions, len(actions), mc["action_history_steps"], self.history_width)
+        states = np.array(self.feedback, np.float32).reshape(-1, self.cfg["data"]["action_dim"])
+        history, padding = history_buckets(states, len(states), mc["action_history_steps"], self.history_width)
         images = list(self.images)
         indices = [max(0, len(images) - 1 - offset * self.image_stride)
                    for offset in range(mc["obs_history"] - 1, -1, -1)]
-        return {"state": self.last_state, "images": {cam: np.stack([images[i][cam] for i in indices])
+        inputs = {"state": self.last_state, "images": {cam: np.stack([images[i][cam] for i in indices])
                 for cam in self.cfg["data"]["cameras"]}, "prompt": self.cfg["data"]["prompt"],
-                "sam2_tokens": self.latest_tokens if sam2_tokens is None else sam2_tokens, "action_history": history, "action_history_is_pad": padding}
+                "action_history": history, "action_history_is_pad": padding}
+        if self.sam is not None:
+            inputs["sam2_tokens"] = self.latest_tokens if sam2_tokens is None else sam2_tokens
+        return inputs
 
     def infer(self, obs, *, noise=None):
         if "episode_id" not in obs:
@@ -247,7 +258,12 @@ class OnlinePolicy(BasePolicy):
     def metadata(self):
         return {**self.policy.metadata, "runtime_sampling_parameters": ["denoise_steps", "rtc_max_guidance"],
                 "rtc_max_guidance": self.rtc_max_guidance,
+                "action_history_source": self.history_source,
+                "action_history_frames": self.max_history,
+                "action_history_bucket_frames": self.history_width,
                 "parallel_sam": self.parallel_sam,
+                "sam2_skipped": self.sam is None,
+                "sam2_full_pointer_span": self.sam2_full_pointer_span,
                 "modes": ["tempo", "temporal_ensemble", "rtc", "dynamicvla", "vlash"],
                 "inference_algorithms": {"dynamicvla": "continuous_latency_aware_streaming",
                                          "vlash": "future_state_rollforward"},

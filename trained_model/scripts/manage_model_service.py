@@ -24,6 +24,8 @@ def services(project):
         'all3935000': dict(**shared, config='deployment_all393.json'),
         'clockwise4000': dict(**shared, config='deployment_step4000.json'),
         'clockwise5000': dict(**shared, config='deployment_rtc_paper.json'),
+        'clockwise_hist90_5000': dict(**shared, config='deployment_hist90_step5000.json'),
+        'clockwise_hist90_direct_2000': dict(**shared, config='deployment_hist90_direct_step2000.json'),
     }
 
 
@@ -87,7 +89,7 @@ def validate_assets(spec):
         cfg = json.loads(path.read_text())
         checkpoint = path.parent / cfg['checkpoint']
         required = [checkpoint/'model.safetensors', checkpoint/'model_config.json',
-                    checkpoint/'norm_stats.json', path.parent/cfg['decoder'],
+                    checkpoint/'norm_stats.json',
                     path.parent/cfg['tokenizer'], path.parent/cfg['sam2_checkpoint']]
         if not (path.parent/cfg['sam2_repo']).is_dir():
             raise FileNotFoundError('SAM2源码目录缺失')
@@ -96,6 +98,15 @@ def validate_assets(spec):
     for path in required:
         if not path.is_file():
             raise FileNotFoundError('模型资产缺失 ' + str(path))
+    if spec['config']:
+        # 切换前先校验模型与解码器配套关系，避免停掉可用服务才发现配置错误。
+        model = json.loads((checkpoint/'model_config.json').read_text())
+        decoder = cfg.get('decoder')
+        if model.get('predict_ut') is True:
+            if not decoder or not (root / 'trained_model' / decoder).is_file():
+                raise FileNotFoundError('潜变量模型的解码器资产缺失')
+        elif model.get('predict_ut') is not False or decoder is not None:
+            raise ValueError('模型与解码器配置不匹配')
 
 
 def stop(spec):
@@ -188,7 +199,9 @@ def manage(action, model_id, project):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('action', choices=['start', 'stop', 'status'])
-    parser.add_argument('model_id', choices=['lora10000', 'all3935000', 'clockwise4000', 'clockwise5000'])
+    root = Path(__file__).resolve().parents[2]
+    project = root.parent/'tempo' if root.name == 'tempo_full' else root
+    parser.add_argument('model_id', choices=services(project))
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
     project = root.parent/'tempo' if root.name == 'tempo_full' else root

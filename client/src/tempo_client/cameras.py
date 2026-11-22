@@ -15,20 +15,30 @@ class CameraFrameError(RuntimeError):
     """帧龄或双图同步尚未满足要求，预热时可有界等待，运行时立即报错。"""
 
 
-def letterbox(rgb):
+def letterbox(rgb, *, match_training=False):
     height, width = rgb.shape[:2]
-    scale = min(224 / width, 224 / height)
-    new_width, new_height = max(1, round(width * scale)), max(1, round(height * scale))
+    if match_training:
+        # 训练集转换向下取整并用双线性，保持 224px 像素坐标一致。
+        ratio = max(width / 224, height / 224)
+        new_width, new_height = max(1, int(width / ratio)), max(1, int(height / ratio))
+        interpolation = cv2.INTER_LINEAR
+    else:
+        scale = min(224 / width, 224 / height)
+        new_width, new_height = max(1, round(width * scale)), max(1, round(height * scale))
+        interpolation = cv2.INTER_AREA
     canvas = np.zeros((224, 224, 3), np.uint8)
     left, top = (224 - new_width) // 2, (224 - new_height) // 2
     canvas[top:top + new_height, left:left + new_width] = cv2.resize(
-        rgb, (new_width, new_height), interpolation=cv2.INTER_AREA)
+        rgb, (new_width, new_height), interpolation=interpolation)
     return canvas
 
 
 class RealSenseCapture:
     def __init__(self, cfg):
         self.cfg = cfg
+        self.match_training_resize = cfg.get("camera_match_training_resize", False)
+        if type(self.match_training_resize) is not bool:
+            raise ValueError("camera_match_training_resize 必须为布尔值")
         self.pipelines = []
 
     def start(self, stop):
@@ -76,7 +86,8 @@ class RealSenseCapture:
             stamp = frame.get_timestamp() / 1000
             if not 0 <= time.time() - stamp <= self.cfg["max_camera_age_s"]:
                 raise LookupError("等待新鲜相机帧")
-            images[name] = (stamp, letterbox(np.asanyarray(frame.get_data())))
+            images[name] = (stamp, letterbox(
+                np.asanyarray(frame.get_data()), match_training=self.match_training_resize))
         return images
 
     def close(self):
@@ -127,6 +138,12 @@ def _capture_worker(cfg, capacity, pixels, stamps, counts, lock, stop, channel, 
 class CameraStream:
     def __init__(self, cfg, *, capture_factory=RealSenseCapture):
         self.cfg = cfg["live"]
+        self.max_grid_error = self.cfg.get("camera_max_grid_error_s")
+        if self.max_grid_error is not None and (
+            type(self.max_grid_error) not in (int, float)
+            or not 0 < self.max_grid_error <= self.cfg["max_camera_age_s"]
+        ):
+            raise ValueError("camera_max_grid_error_s 必须为正数且不超过相机帧龄上限")
         self.names = list(self.cfg["cameras"])
         if set(self.names) != {"head", "left_wrist"}:
             raise ValueError("需要head与left_wrist两路相机")
@@ -175,6 +192,7 @@ class CameraStream:
                 raise RuntimeError(self.error)
             if not self.process.is_alive():
                 raise RuntimeError(f"相机进程已退出，exitcode={self.process.exitcode}")
+        grid_error = self.max_grid_error if stamp is not None else None
         stamp = time.time() if stamp is None else stamp
         if not self.lock.acquire(timeout=self.cfg.get("camera_lock_timeout_s", .05)):
             raise RuntimeError("相机共享帧锁超时")
@@ -187,7 +205,17 @@ class CameraStream:
                 if not len(available):
                     raise LookupError("等待时间网格之前的相机帧")
                 slot = available[np.argmax(times[index, available])]
+                if grid_error is not None and times[index, slot] < stamp:
+                    # 训练按绝对时间差选最近帧。在线等待实际收到的后一帧，平局选前帧。
+                    later = np.flatnonzero(times[index] > stamp)
+                    if not len(later):
+                        raise LookupError("等待时间网格之后的相机帧")
+                    candidate = later[np.argmin(times[index, later])]
+                    if times[index, candidate] - stamp < stamp - times[index, slot]:
+                        slot = candidate
                 image_stamp = float(times[index, slot])
+                if grid_error is not None and abs(image_stamp - stamp) > grid_error:
+                    raise CameraFrameError(f"相机 {name} 与时间网格偏差过大")
                 if stamp - image_stamp > self.cfg["max_camera_age_s"]:
                     raise CameraFrameError(f"相机 {name} 帧陈旧，帧龄 {stamp - image_stamp:.3f} 秒")
                 images[name] = view[index, slot].copy()

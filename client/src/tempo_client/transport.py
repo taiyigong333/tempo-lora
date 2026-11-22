@@ -56,6 +56,12 @@ class Client:
             for key in (() if sampling else ('inference_profile', 'denoise_steps', 'rtc_max_guidance')):
                 if key in cfg['model'] and self.metadata.get(key) != cfg['model'][key]:
                     raise ValueError(f'服务器推理参数不匹配 {key}: {self.metadata.get(key)}')
+            # 模型历史契约独立于可编辑的推理参数。
+            for key in ('action_history_source', 'action_history_frames', 'action_history_bucket_frames'):
+                if key in cfg['model'] and self.metadata.get(key) != cfg['model'][key]:
+                    raise ValueError(f'服务器状态历史契约不匹配 {key}: {self.metadata.get(key)}')
+            if "predict_ut" in cfg["model"] and self.metadata.get("predict_ut") is not cfg["model"]["predict_ut"]:
+                raise ValueError("服务器动作预测方式与所选模型不匹配")
             expected_checkpoint = cfg["model"].get("checkpoint_contains")
             if expected_checkpoint and expected_checkpoint not in self.metadata.get("checkpoint", ""):
                 raise ValueError("服务器检查点来源与所选模型不匹配")
@@ -80,8 +86,12 @@ class Client:
             raise ValueError("服务器尚未支持所选推理模式，请启动更新后的模型服务")
         if prompt not in self.metadata.get("task_prompts", [prompt]):
             raise ValueError("所选任务与当前服务模型不匹配")
-        if mode == "rtc" and self.metadata.get("rtc_algorithm") != "decoded_action_vjp_soft_prefix":
-            raise ValueError("服务器RTC潜变量引导算法不匹配")
+        if mode == "rtc":
+            # 旧模型配置仍按潜变量 RTC 协议校验。
+            expected = ("direct_action_vjp_soft_prefix" if self.cfg["model"].get("predict_ut") is False
+                        else "decoded_action_vjp_soft_prefix")
+            if self.metadata.get("rtc_algorithm") != expected:
+                raise ValueError("服务器RTC引导算法与所选模型不匹配")
         algorithms = {"dynamicvla": "continuous_latency_aware_streaming", "vlash": "future_state_rollforward"}
         if mode in algorithms and self.metadata.get("inference_algorithms", {}).get(mode) != algorithms[mode]:
             raise ValueError("服务器推理算法实现与所选模式不匹配")

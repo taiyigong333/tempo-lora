@@ -84,7 +84,7 @@ class FullDeploymentTests(unittest.TestCase):
         from openpi.tempo_full.inference import main
         settings = json.loads(self.path.read_text())
         settings.update(inference_profile='rtc_paper', denoise_steps=5, rtc_max_guidance=5.,
-                        host='127.0.0.1', port=8002)
+                        host='127.0.0.1', port=8002, sam2_full_pointer_span=True)
         self.path.write_text(json.dumps(settings))
         with patch('sys.argv', ['inference', '--config', str(self.path)]), \
              patch('openpi.tempo_full.inference.create_policy'), \
@@ -94,6 +94,7 @@ class FullDeploymentTests(unittest.TestCase):
             online.return_value.metadata = {}
             main()
             self.assertEqual(online.call_args.kwargs['rtc_max_guidance'], 5.)
+            self.assertTrue(online.call_args.kwargs['sam2_full_pointer_span'])
 
     def test_warmup_only_finishes_without_opening_port(self):
         from unittest.mock import patch
@@ -145,6 +146,40 @@ class FullDeploymentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '窗口或维度'):
             read_deployment(self.path)
 
+    def test_sam2_bypass_requires_frozen_finite_zero_residual(self):
+        from openpi.models_pytorch.pi0_pytorch import SAM2CrossAttnFusion
+        from openpi.tempo_full.inference import can_skip_sam2
+
+        model = torch.nn.Module()
+        model.sam2_fusion = SAM2CrossAttnFusion(vis_dim=8, sam2_dim=4, num_tokens=2, num_heads=2)
+        self.assertFalse(can_skip_sam2(model))
+        model.eval().requires_grad_(False)
+        self.assertTrue(can_skip_sam2(model))
+        model.sam2_fusion.out_proj.bias[0] = 1
+        self.assertFalse(can_skip_sam2(model))
+        model.sam2_fusion.out_proj.bias.zero_()
+        model.sam2_fusion.q_proj.weight[0, 0] = float('nan')
+        self.assertFalse(can_skip_sam2(model))
+
+    def test_direct_action_reads_checkpoint_without_decoder(self):
+        from unittest.mock import patch
+
+        self.write_config(dataclasses.replace(self.model, predict_ut=False))
+        settings = json.loads(self.path.read_text())
+        settings.pop('decoder')
+        self.path.write_text(json.dumps(settings))
+        # 直接动作的加载路径不能尝试读取旧解码器。
+        with patch.object(UtActionDecoder, 'from_pretrained', side_effect=AssertionError('读取了解码器')):
+            _, _, model, _ = read_deployment(self.path)
+        self.assertFalse(model.predict_ut)
+        self.assertIsNone(model.ut_decoder_path)
+        self.assertEqual((model.flow_positions, model.flow_dim), (30, 32))
+
+        settings['decoder'] = 'decoder.pt'
+        self.path.write_text(json.dumps(settings))
+        with self.assertRaisesRegex(ValueError, '直接动作策略禁止配置解码器'):
+            read_deployment(self.path)
+
     def test_incomplete_download_rejected(self):
         (self.root/'model.safetensors').unlink()
         (self.root/'model.safetensors.incomplete').touch()
@@ -177,6 +212,40 @@ class FullDeploymentTests(unittest.TestCase):
             history[valid] = np.asarray(states)[indices[valid] + 1]
             np.testing.assert_allclose(actual['action_history'], history.reshape(10,30,7).mean(1))
             np.testing.assert_array_equal(actual['action_history_is_pad'], (~valid).reshape(10,30).all(1))
+
+    def test_state_history_matches_90_frame_training_window_and_reset(self):
+        settings = json.loads(self.path.read_text())
+        settings.update(action_history_source='state', action_history_frames=90)
+        self.path.write_text(json.dumps(settings))
+        _, cfg, _, _ = read_deployment(self.path)
+        online = OnlinePolicy(object(), cfg, sam_stream=FakeSam())
+        states = np.arange(101 * 7, dtype=np.float32).reshape(101, 7) / 100
+        images = {key: np.zeros((224, 224, 3), np.uint8) for key in cfg['data']['cameras']}
+        for t, state in enumerate(states):
+            online.ingest(dict(timestamp=t/30, state=state, images=images), encode_sam=False)
+            if t not in (0, 1, 8, 9, 30, 89, 90, 95, 100):
+                continue
+            actual = online.inputs()
+            indices = np.arange(t-90, t)
+            valid = indices >= 0
+            expected = np.zeros((90, 7), np.float32)
+            expected[valid] = states[indices[valid]]
+            np.testing.assert_array_equal(actual['state'], state)
+            np.testing.assert_array_equal(actual['action_history'], expected.reshape(10, 9, 7).mean(1))
+            np.testing.assert_array_equal(actual['action_history_is_pad'], (~valid).reshape(10, 9).all(1))
+        online.reset()
+        online.ingest(dict(timestamp=0, state=states[-1], images=images), encode_sam=False)
+        self.assertTrue(online.inputs()['action_history_is_pad'].all())
+        self.assertFalse(online.inputs()['action_history'].any())
+
+    def test_invalid_history_contract_rejected(self):
+        base = json.loads(self.path.read_text())
+        for overrides in (dict(action_history_source='unknown'), dict(action_history_frames=91),
+                          dict(action_history_frames=0), dict(action_history_frames=True)):
+            with self.subTest(overrides=overrides):
+                self.path.write_text(json.dumps({**base, **overrides}))
+                with self.assertRaisesRegex(ValueError, '历史'):
+                    read_deployment(self.path)
 
     def test_action_roundtrip_keeps_gripper_absolute_and_30_steps(self):
         _, _, _, norm = read_deployment(self.path)

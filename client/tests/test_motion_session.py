@@ -93,6 +93,7 @@ class SimulatedClient(TimedClient):
 
     def __init__(self, cfg):
         super().__init__(.01)
+        self.cfg = cfg
         self.target = np.r_[cfg["home"]["joint_positions_rad"], .05].astype(np.float32)
         self.local_ip = "192.168.50.1"
         self.metadata = {"config": cfg["model"]["config"], "step": 10000, "checkpoint": "step_00010000.pt",

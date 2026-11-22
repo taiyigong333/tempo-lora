@@ -80,6 +80,14 @@ class ClientTests(unittest.TestCase):
         self.assertFalse(result[:28].any())
         self.assertFalse(result[-28:].any())
 
+    def test_training_letterbox_uses_linear_interpolation_and_floor_dimensions(self):
+        import cv2
+        rgb = np.random.default_rng(11).integers(0, 256, (479, 640, 3), dtype=np.uint8)
+        expected = np.zeros((224, 224, 3), np.uint8)
+        expected[28:195] = cv2.resize(rgb, (224, 167), interpolation=cv2.INTER_LINEAR)
+        np.testing.assert_array_equal(letterbox(rgb, match_training=True), expected)
+        self.assertFalse(np.array_equal(letterbox(rgb), expected))
+
     def test_failed_rpc_closes_without_retry(self):
         client = Client.__new__(Client)
         client.cfg = {"model": {"fps": 30, "action_horizon": 16, "action_dim": 7}}
