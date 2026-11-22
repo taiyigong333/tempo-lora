@@ -232,14 +232,44 @@ class Robot:
         while not cancel.is_set():
             self.check_status()
             if np.max(np.abs(self.read_joints() - target)) <= self.home["joint_tolerance_rad"]:
-                self.hold()
+                self._open_gripper_at_home(cancel, deadline)
                 return
             if time.monotonic() >= deadline:
                 raise TimeoutError("机器人关节归位超时")
             cancel.wait(.02)
         raise InterruptedError("归位已停止")
 
-    def hold(self):
+    def _open_gripper_at_home(self, cancel, deadline):
+        # 关节到达归位点后再张开，避免机械臂仍在移动时释放物体。
+        width = self.safety["gripper_range_m"][1]
+        with self.lock:
+            if cancel.is_set() or self.holding:
+                raise InterruptedError("夹爪归位已取消")
+            self.read_state()
+            if cancel.is_set():
+                raise InterruptedError("夹爪归位已取消")
+            if time.monotonic() >= deadline:
+                raise TimeoutError("夹爪归位超时")
+            self.gripper.move_gripper_m(value=width, force=self.safety["gripper_force_n"])
+            self.sent_commands += 1
+        while not cancel.is_set():
+            with self.lock:
+                if cancel.is_set() or self.holding:
+                    break
+                self.check_status()
+                actual = float(self.read_state()[6])
+                if cancel.is_set():
+                    break
+                if abs(actual - width) <= self.safety["gripper_feedback_tolerance_m"]:
+                    # 归位保持继续使用全开目标，避免把到位容差内的实测值当作新目标。
+                    self.hold(gripper_target_m=width)
+                    return
+            if time.monotonic() >= deadline:
+                raise TimeoutError("夹爪未达到归位开口")
+            cancel.wait(.02)
+        raise InterruptedError("夹爪归位已停止")
+
+    def hold(self, *, gripper_target_m=None):
         with self.lock:
             self.holding = True
             if self.arm is None or not self.enabled or self.hold_complete:
@@ -264,8 +294,9 @@ class Robot:
                 self.diagnostics["hold_gripper_error"] = str(error)
                 return
             lo, hi = self.safety["gripper_range_m"]
-            if lo <= width <= hi:
-                self.gripper.move_gripper_m(value=width, force=self.safety["gripper_force_n"])
+            target_width = width if gripper_target_m is None else gripper_target_m
+            if lo <= target_width <= hi:
+                self.gripper.move_gripper_m(value=target_width, force=self.safety["gripper_force_n"])
                 self.sent_commands += 1
             self.hold_complete = True
 

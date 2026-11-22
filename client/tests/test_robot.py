@@ -4,7 +4,7 @@ import threading
 import time
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import numpy as np
 
@@ -158,6 +158,54 @@ class RobotTests(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             self.robot.prepare_motion(threading.Event(), 10)
         arm.move_j.assert_not_called()
+
+    def test_home_opens_gripper_after_joint_move_and_preserves_full_width(self):
+        home = np.asarray(self.robot.home["joint_positions_rad"], float)
+        self.robot.read_joints.return_value = home
+        self.robot.prepare_motion = Mock()
+        self.robot.check_status = Mock()
+        self.robot.enabled, self.robot.holding = True, False
+        self.robot.safety["gripper_range_m"] = [0., .07]
+        almost_open = self.target.copy()
+        almost_open[6] = .0695
+        self.robot.read_state.side_effect = [self.target, self.target, almost_open, almost_open]
+        operations = Mock()
+        operations.attach_mock(self.robot.arm.move_j, "joints")
+        operations.attach_mock(self.robot.gripper.move_gripper_m, "gripper")
+
+        self.robot.go_home(threading.Event())
+
+        self.assertEqual(operations.mock_calls, [
+            call.joints(home.tolist()), call.gripper(value=.07, force=1.),
+            call.joints(home.tolist()), call.gripper(value=.07, force=1.),
+        ])
+        self.assertTrue(self.robot.hold_complete)
+
+    def test_home_fails_if_gripper_does_not_reach_open_width(self):
+        self.robot.read_joints.return_value = np.asarray(self.robot.home["joint_positions_rad"], float)
+        self.robot.prepare_motion = Mock()
+        self.robot.check_status = Mock()
+        self.robot.enabled, self.robot.holding = True, False
+        self.robot.home["timeout_s"] = .01
+
+        with self.assertRaisesRegex(TimeoutError, "夹爪未达到归位开口"):
+            self.robot.go_home(threading.Event())
+
+        self.robot.gripper.move_gripper_m.assert_called_once_with(value=.1, force=1.)
+        self.assertFalse(self.robot.hold_complete)
+
+    def test_cancelled_home_leaves_gripper_target_untouched(self):
+        self.robot.read_joints.return_value = np.asarray(self.robot.home["joint_positions_rad"], float)
+        self.robot.prepare_motion = Mock()
+        self.robot.check_status = Mock()
+        self.robot.enabled, self.robot.holding = True, False
+        cancel = threading.Event()
+        self.robot.arm.move_j.side_effect = lambda joints: cancel.set()
+
+        with self.assertRaises(InterruptedError):
+            self.robot.go_home(cancel)
+
+        self.robot.gripper.move_gripper_m.assert_not_called()
 
     def test_home_guard_precedes_enable(self):
         self.robot.read_pose.return_value[0] = 2

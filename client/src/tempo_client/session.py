@@ -290,7 +290,7 @@ class SessionWorker:
                     self.robot.connect()
                     if options["execute"]:
                         if options["home_before"]:
-                            self.events.put(("status", "正在按现场确认的关节目标低速归位"))
+                            self.events.put(("status", "正在低速归位，关节到位后张开夹爪"))
                             self.robot.go_home(self.cancel)
                         self.events.put(("status", "正在确认机器人CAN关节控制模式"))
                         self.robot.prepare_motion(self.cancel, cfg["safety"]["speed_percent"])

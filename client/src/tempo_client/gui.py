@@ -363,8 +363,12 @@ class TempoApp:
                     cfg = select_runtime(cfg, self._selected_task(), self._selected_mode())
                     execute = mode == "live" and self.execute.get()
                     if execute:
-                        home = ("开始前按配置关节角低速归位，速度10%" if self.home_before.get()
-                                else "从现场当前关节位置开始")
+                        if self.home_before.get():
+                            width_mm = 1000 * cfg["safety"]["gripper_range_m"][1]
+                            home = (f"开始前低速归位，速度{cfg['home']['speed_percent']}%，"
+                                    f"关节到位后夹爪全开至{width_mm:g}毫米")
+                        else:
+                            home = "从现场当前关节位置开始"
                         runtime_text = "持续运行，使用停止并保持按钮结束" if duration == 0 else f"运行{duration:g}秒后停止保持"
                         text = (f"任务 {cfg['task']['label']}\n模式 {MODE_LABELS[cfg['inference']['mode']]}\n"
                                 f"{home}\n策略速度 {cfg['safety']['speed_percent']}%\n{runtime_text}\n\n"
