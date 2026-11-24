@@ -24,6 +24,7 @@ files = {
     'trained_model/config_use/deployment_full_step4000.json': 'trained_model/deployment_step4000.json',
     'trained_model/config_use/deployment_full_hist90_step5000.json': 'trained_model/deployment_hist90_step5000.json',
     'trained_model/config_use/deployment_full_hist90_direct_step2000.json': 'trained_model/deployment_hist90_direct_step2000.json',
+    'trained_model/config_use/deployment_full_hist90_direct_step5000.json': 'trained_model/deployment_hist90_direct_step5000.json',
     'tempo/tests/test_full_deployment.py': 'tests/test_full_deployment.py',
     'tempo/tests/test_exact_optimizations.py': 'tests/test_exact_optimizations.py',
     'tempo/tests/test_deployment_runtime.py': 'tests/test_deployment_runtime.py',

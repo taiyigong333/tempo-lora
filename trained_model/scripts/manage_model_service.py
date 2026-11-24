@@ -26,6 +26,7 @@ def services(project):
         'clockwise5000': dict(**shared, config='deployment_rtc_paper.json'),
         'clockwise_hist90_5000': dict(**shared, config='deployment_hist90_step5000.json'),
         'clockwise_hist90_direct_2000': dict(**shared, config='deployment_hist90_direct_step2000.json'),
+        'clockwise_hist90_direct_5000': dict(**shared, config='deployment_hist90_direct_step5000.json'),
     }
 
 

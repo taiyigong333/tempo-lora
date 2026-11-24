@@ -12,7 +12,8 @@ case "$PROFILE" in
     rtc_paper) CONFIG="$ROOT/trained_model/deployment_rtc_paper.json" ;;
     step4000) CONFIG="$ROOT/trained_model/deployment_step4000.json" ;;
     hist90_direct_step2000) CONFIG="$ROOT/trained_model/deployment_hist90_direct_step2000.json" ;;
-    *) echo "支持的配置为 default、rtc_paper、step4000 或 hist90_direct_step2000" >&2; exit 2 ;;
+    hist90_direct_step5000) CONFIG="$ROOT/trained_model/deployment_hist90_direct_step5000.json" ;;
+    *) echo "支持的配置为 default、rtc_paper、step4000 、hist90_direct_step2000 或 hist90_direct_step5000" >&2; exit 2 ;;
 esac
 SESSION=tempo_full_inference
 # 锁覆盖检查、退出和新进程创建，避免两个客户端并发切换模型。
